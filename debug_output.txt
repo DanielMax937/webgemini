@@ -1,0 +1,26 @@
+Clipboard permissions granted
+Page loaded. Waiting 5 seconds...
+Found input element
+Sent prompt
+Waiting for response...
+Screenshot saved to debug_after_response.png
+
+Searching for stop button...
+  button[aria-label*="Stop"]: 0 found
+  button[data-tooltip*="Stop"]: 0 found
+  [aria-label*="stop"]: 0 found
+  button[aria-label*="停止"]: 0 found
+
+Searching for copy button...
+  button[aria-label*="Copy"]: 0 found
+  button[data-tooltip*="Copy"]: 0 found
+  [aria-label*="copy"]: 0 found
+  button[aria-label*="复制"]: 0 found
+  button[aria-label*="Copy response"]: 0 found
+
+Searching for response container...
+  message-content: 0 found
+  .model-response-text: 0 found
+  [data-message-author-role="model"]: 0 found
+  .response-content: 0 found
+  model-response: 0 found
