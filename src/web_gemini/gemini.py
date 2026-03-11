@@ -14,19 +14,19 @@ GEMINI_URL = "https://gemini.google.com/app"
 MAX_POLL_TIME = 120  # seconds
 POLL_INTERVAL = 2  # seconds
 
-# Gemini selectors (Chinese UI)
-INPUT_SELECTOR = '[aria-label="在此处输入提示"]'
-SEND_BUTTON_SELECTOR = '[aria-label="发送"]'
-COPY_BUTTON_SELECTOR = '[aria-label="复制"]'
-TOOLS_BUTTON_SELECTOR = 'button:has-text("工具")'
+# Gemini selectors (English UI)
+INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
+SEND_BUTTON_SELECTOR = '[aria-label="Send"]'
+COPY_BUTTON_SELECTOR = '[aria-label="Copy"]'
+TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
 
 # Tool selectors
 TOOL_SELECTORS = {
     "deep_research": 'button:has-text("Deep Research")',
-    "video": 'button:has-text("制作视频")',
-    "image": 'button:has-text("生成图片")',
+    "video": 'button:has-text("Create video")',
+    "image": 'button:has-text("Create image")',
     "canvas": 'button:has-text("Canvas")',
-    "tutor": 'button:has-text("学习辅导")',
+    "tutor": 'button:has-text("Help me learn")',
 }
 
 
@@ -64,12 +64,10 @@ async def send_prompt(prompt: str, tool: Optional[str] = None) -> GeminiResponse
         await chrome.run_cmd("act", "--selector", TOOL_SELECTORS[tool], "--action", "click")
         await asyncio.sleep(1)
 
-    # Fill the chat input
+    # Fill the chat input and press Enter to send
     await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "fill", "--value", prompt)
     await asyncio.sleep(0.5)
-
-    # Click send button
-    await chrome.run_cmd("act", "--selector", SEND_BUTTON_SELECTOR, "--action", "click")
+    await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "press", "--value", "Enter")
 
     # Poll until copy button is available
     await _wait_for_copy_button()
@@ -93,10 +91,9 @@ async def _wait_for_copy_button():
             start = dom_json.find('[')
             if start >= 0:
                 items = json.loads(dom_json[start:])
-                # Check if copy button exists (not "复制提示", just "复制")
                 copy_buttons = [
                     item for item in items
-                    if item.get('aria_label') == '复制' and item['tag'] == 'button'
+                    if item.get('aria_label') == 'Copy' and item['tag'] == 'button'
                 ]
                 if copy_buttons:
                     # Copy button found, response is ready
