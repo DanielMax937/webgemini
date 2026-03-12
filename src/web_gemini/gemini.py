@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from playwright.async_api import async_playwright
+
 from .browser import chrome
 
 IMAGES_DIR = Path(__file__).parent.parent.parent / "images"
@@ -19,6 +21,9 @@ INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
 SEND_BUTTON_SELECTOR = '[aria-label="Send"]'
 COPY_BUTTON_SELECTOR = '[aria-label="Copy"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
+UPLOAD_MENU_SELECTOR = '[aria-label="Open upload file menu"]'
+UPLOAD_FILES_SELECTOR = '[aria-label="Upload files. Documents, data, code files"]'
+CDP_URL = "http://localhost:9222"
 
 # Tool selectors
 TOOL_SELECTORS = {
@@ -42,12 +47,17 @@ class GeminiResponse:
     images: list[ImageResult]
 
 
-async def send_prompt(prompt: str, tool: Optional[str] = None) -> GeminiResponse:
+async def send_prompt(
+    prompt: str, 
+    tool: Optional[str] = None,
+    attachments: Optional[list[str]] = None
+) -> GeminiResponse:
     """Send prompt to Gemini and wait for response.
 
     Args:
         prompt: The prompt to send
         tool: Optional tool to use. One of: deep_research, video, image, canvas, tutor
+        attachments: Optional list of local file paths to upload
     """
 
     # Navigate to Gemini (reuse current tab instead of opening new one)
@@ -64,6 +74,11 @@ async def send_prompt(prompt: str, tool: Optional[str] = None) -> GeminiResponse
         await chrome.run_cmd("act", "--selector", TOOL_SELECTORS[tool], "--action", "click")
         await asyncio.sleep(1)
 
+    # Upload attachments if provided
+    if attachments:
+        await _upload_attachments(attachments)
+        await asyncio.sleep(2)
+
     # Fill the chat input and press Enter to send
     await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "fill", "--value", prompt)
     await asyncio.sleep(0.5)
@@ -76,6 +91,47 @@ async def send_prompt(prompt: str, tool: Optional[str] = None) -> GeminiResponse
     text = await _get_text_response()
 
     return GeminiResponse(text=text, images=[])
+
+
+async def _upload_attachments(file_paths: list[str]) -> None:
+    """Upload attachment files via the file chooser dialog."""
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(CDP_URL)
+        context = browser.contexts[0]
+        page = context.pages[-1] if context.pages else await context.new_page()
+
+        # Click upload menu
+        await page.click(UPLOAD_MENU_SELECTOR)
+        await asyncio.sleep(1)
+
+        # Trigger file chooser and upload files
+        async with page.expect_file_chooser() as fc_info:
+            await page.click(UPLOAD_FILES_SELECTOR)
+
+        file_chooser = await fc_info.value
+        
+        # Validate all files exist and calculate total size
+        total_size = 0
+        for path in file_paths:
+            if not Path(path).exists():
+                raise FileNotFoundError(f"Attachment file not found: {path}")
+            total_size += Path(path).stat().st_size
+        
+        await file_chooser.set_files(file_paths)
+        
+        # Dynamic wait time based on file count and size
+        # Base 2s + 1s per file + 0.3s per MB
+        file_count = len(file_paths)
+        wait_time = 2 + (file_count * 1) + (total_size / (1024 * 1024) * 0.3)
+        wait_time = min(wait_time, 30)  # Max 30 seconds
+        
+        await asyncio.sleep(wait_time)
+
+    finally:
+        if pw:
+            await pw.stop()
 
 
 async def _wait_for_copy_button():

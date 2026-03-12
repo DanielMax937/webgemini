@@ -2,33 +2,25 @@ import asyncio
 import base64
 import json
 from pathlib import Path
-from dataclasses import dataclass
 from typing import Optional
 
-from playwright.async_api import async_playwright, Page, BrowserContext
+from playwright.async_api import async_playwright, Page
 
 from .jobs import JobStatus, update_job
 
 OUTPUTS_DIR = Path(__file__).parent.parent.parent / "outputs"
 GEMINI_URL = "https://gemini.google.com/app"
-MAX_VIDEO_POLL_TIME = 300  # 5 minutes
+MAX_IMAGE_POLL_TIME = 300  # 5 minutes
 POLL_INTERVAL = 3
 
-# Selectors discovered from live Gemini page
+# Selectors
 INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
 UPLOAD_MENU_SELECTOR = '[aria-label="Open upload file menu"]'
 UPLOAD_FILES_SELECTOR = '[aria-label="Upload files. Documents, data, code files"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
-CREATE_VIDEO_SELECTOR = 'button.mat-mdc-list-item:has-text("Create video")'
-MODE_PICKER_SELECTOR = '[aria-label="Open mode picker"]'
+CREATE_IMAGE_SELECTOR = 'button.mat-mdc-list-item:has-text("Create image")'
 
 CDP_URL = "http://localhost:9222"
-
-
-@dataclass
-class VideoResult:
-    video_url: str
-    local_path: str
 
 
 async def _connect_to_chrome() -> tuple:
@@ -63,50 +55,56 @@ async def _upload_images(page: Page, image_paths: list[str]) -> None:
     await asyncio.sleep(wait_time)
 
 
-async def _select_create_video(page: Page) -> None:
-    """Select 'Create video' (Veo3) from the Tools menu."""
+async def _select_create_image(page: Page) -> None:
+    """Select 'Create image' tool from the Tools menu."""
     await page.click(TOOLS_BUTTON_SELECTOR)
     await asyncio.sleep(1)
-    await page.click(CREATE_VIDEO_SELECTOR)
+    await page.click(CREATE_IMAGE_SELECTOR)
     await asyncio.sleep(1)
-    # Press Escape to close the tools dropdown
     await page.keyboard.press("Escape")
     await asyncio.sleep(0.5)
 
 
-async def _wait_for_video(page: Page) -> Optional[str]:
-    """Poll the page for a video element and return its source URL."""
+async def _wait_for_images(page: Page) -> list[str]:
+    """Poll the page for generated images and return their URLs."""
     elapsed = 0
-    while elapsed < MAX_VIDEO_POLL_TIME:
+    while elapsed < MAX_IMAGE_POLL_TIME:
         try:
-            # Look for video elements in the response
-            video_url = await page.evaluate("""() => {
-                // Check for <video> elements with src
-                const videos = document.querySelectorAll('video source, video[src]');
-                for (const v of videos) {
-                    const src = v.src || v.getAttribute('src');
-                    if (src && src.startsWith('http')) return src;
-                }
-                // Check for download links with video extensions
-                const links = document.querySelectorAll('a[href*=".mp4"], a[download]');
-                for (const a of links) {
-                    if (a.href && a.href.startsWith('http')) return a.href;
-                }
-                return null;
-            }""")
-            if video_url:
-                return video_url
+            # Look for generated images - check for download buttons which indicate generation is complete
+            download_buttons = await page.locator('[aria-label="Download full size image"]').count()
+            if download_buttons > 0:
+                await asyncio.sleep(2)  # Wait to ensure images are fully loaded
+                
+                # Get image URLs from the response container
+                # Look for large images in the conversation (not profile pics)
+                image_urls = await page.evaluate("""() => {
+                    const urls = [];
+                    const images = document.querySelectorAll('img');
+                    for (const img of images) {
+                        if (img.src && img.src.startsWith('http')) {
+                            // Filter out small images (profile pics, icons)
+                            const width = img.naturalWidth || img.width;
+                            const height = img.naturalHeight || img.height;
+                            if (width > 200 && height > 200) {
+                                urls.push(img.src);
+                            }
+                        }
+                    }
+                    return [...new Set(urls)];
+                }""")
+                if image_urls and len(image_urls) > 0:
+                    return image_urls
         except Exception:
             pass
 
         await asyncio.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
 
-    return None
+    return []
 
 
-async def _download_video_via_browser(page: Page, url: str, local_path: Path) -> None:
-    """Download video using the browser's authenticated session."""
+async def _download_image_via_browser(page: Page, url: str, local_path: Path) -> None:
+    """Download image using the browser's authenticated session."""
     local_path.parent.mkdir(parents=True, exist_ok=True)
     response_bytes = await page.evaluate("""async (url) => {
         const response = await fetch(url, { credentials: 'include' });
@@ -122,8 +120,8 @@ async def _download_video_via_browser(page: Page, url: str, local_path: Path) ->
     local_path.write_bytes(base64.b64decode(response_bytes))
 
 
-async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> None:
-    """Full Veo3 video generation flow. Updates job state throughout.
+async def generate_image(job_id: str, prompt: str, image_paths: list[str]) -> None:
+    """Full image generation flow. Updates job state throughout.
 
     This function is meant to be run as a background task.
     It acquires no lock — the caller should hold chrome.lock.
@@ -140,12 +138,16 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
         await page.wait_for_load_state("domcontentloaded")
         await asyncio.sleep(5)
 
-        # 2. Select Create video (Veo3) tool
-        await _select_create_video(page)
+        # 2. Select Create image tool
+        await _select_create_image(page)
 
-        # 3. Upload images
+        # 3. Upload reference images if provided
         if image_paths:
-            await _upload_images(page, image_paths)
+            try:
+                await _upload_images(page, image_paths)
+            except Exception as e:
+                # If upload fails, continue without reference images
+                print(f"Warning: Failed to upload images: {e}")
 
         # 4. Fill prompt and send
         await page.click(INPUT_SELECTOR)
@@ -156,22 +158,28 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
         await asyncio.sleep(0.3)
         await page.keyboard.press("Enter")
 
-        # 5. Poll for video generation
-        video_url = await _wait_for_video(page)
-        if not video_url:
-            update_job(job_id, status=JobStatus.FAILED, error="timeout: no video found within 5 minutes")
+        # 5. Poll for generated images
+        image_urls = await _wait_for_images(page)
+        if not image_urls:
+            update_job(job_id, status=JobStatus.FAILED, error="timeout: no images generated within 3 minutes")
             return
 
-        # 6. Download video locally via browser's authenticated session
+        # 6. Download images locally
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        local_path = OUTPUTS_DIR / f"{job_id}.mp4"
-        await _download_video_via_browser(page, video_url, local_path)
+        downloaded_images = []
+        
+        for idx, url in enumerate(image_urls):
+            local_path = OUTPUTS_DIR / f"{job_id}_{idx}.png"
+            await _download_image_via_browser(page, url, local_path)
+            downloaded_images.append({
+                "url": url,
+                "local_path": str(local_path)
+            })
 
         update_job(
             job_id,
             status=JobStatus.COMPLETED,
-            video_url=video_url,
-            local_path=str(local_path),
+            images=downloaded_images,
         )
 
     except Exception as e:

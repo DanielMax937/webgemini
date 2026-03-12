@@ -18,7 +18,13 @@ class Job:
     job_id: str
     status: JobStatus
     prompt: str
+    tool: Optional[str] = None
+    attachments: list[str] = field(default_factory=list)
     image_paths: list[str] = field(default_factory=list)
+    # Chat results
+    text: Optional[str] = None
+    images: list[dict] = field(default_factory=list)
+    # Video results
     video_url: Optional[str] = None
     local_path: Optional[str] = None
     error: Optional[str] = None
@@ -31,9 +37,21 @@ _jobs: dict[str, Job] = {}
 _tasks: dict[str, asyncio.Task] = {}
 
 
-def create_job(prompt: str, image_paths: list[str]) -> Job:
+def create_job(
+    prompt: str, 
+    tool: Optional[str] = None,
+    attachments: Optional[list[str]] = None,
+    image_paths: Optional[list[str]] = None
+) -> Job:
     job_id = uuid.uuid4().hex[:12]
-    job = Job(job_id=job_id, status=JobStatus.PENDING, prompt=prompt, image_paths=image_paths)
+    job = Job(
+        job_id=job_id, 
+        status=JobStatus.PENDING, 
+        prompt=prompt,
+        tool=tool,
+        attachments=attachments or [],
+        image_paths=image_paths or []
+    )
     _jobs[job_id] = job
     return job
 
