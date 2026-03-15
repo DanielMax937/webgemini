@@ -7,7 +7,9 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, Page, BrowserContext
 
-from .jobs import JobStatus, update_job
+from .jobs import JobStatus, persist_job, update_job
+from .navigation import navigate_page_to_gemini_with_retry
+from .upload import upload_files
 
 OUTPUTS_DIR = Path(__file__).parent.parent.parent / "outputs"
 GEMINI_URL = "https://gemini.google.com/app"
@@ -16,8 +18,6 @@ POLL_INTERVAL = 3
 
 # Selectors discovered from live Gemini page
 INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
-UPLOAD_MENU_SELECTOR = '[aria-label="Open upload file menu"]'
-UPLOAD_FILES_SELECTOR = '[aria-label="Upload files. Documents, data, code files"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
 CREATE_VIDEO_SELECTOR = 'button.mat-mdc-list-item:has-text("Create video")'
 MODE_PICKER_SELECTOR = '[aria-label="Open mode picker"]'
@@ -40,27 +40,8 @@ async def _connect_to_chrome() -> tuple:
 
 
 async def _upload_images(page: Page, image_paths: list[str]) -> None:
-    """Upload images via the file chooser dialog."""
-    await page.click(UPLOAD_MENU_SELECTOR)
-    await asyncio.sleep(1)
-
-    async with page.expect_file_chooser() as fc_info:
-        await page.click(UPLOAD_FILES_SELECTOR)
-
-    file_chooser = await fc_info.value
-    
-    # Calculate total size for dynamic wait time
-    total_size = sum(Path(p).stat().st_size for p in image_paths)
-    
-    await file_chooser.set_files(image_paths)
-    
-    # Dynamic wait time based on file count and size
-    # Base 2s + 1s per file + 0.3s per MB
-    file_count = len(image_paths)
-    wait_time = 2 + (file_count * 1) + (total_size / (1024 * 1024) * 0.3)
-    wait_time = min(wait_time, 30)  # Max 30 seconds
-    
-    await asyncio.sleep(wait_time)
+    """Upload images. Uses CDP to bypass 50MB limit."""
+    await upload_files(page, image_paths)
 
 
 async def _select_create_video(page: Page) -> None:
@@ -129,16 +110,15 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
     It acquires no lock — the caller should hold chrome.lock.
     """
     update_job(job_id, status=JobStatus.PROCESSING)
+    persist_job(job_id, status=JobStatus.PROCESSING.value)
 
     pw = None
     try:
         pw, browser, context = await _connect_to_chrome()
         page = context.pages[-1] if context.pages else await context.new_page()
 
-        # 1. Navigate to fresh Gemini conversation
-        await page.goto(GEMINI_URL, timeout=60000)
-        await page.wait_for_load_state("domcontentloaded")
-        await asyncio.sleep(5)
+        # 1. Navigate to fresh Gemini conversation (with retry: close and reopen, max 3 times, 5s interval)
+        await navigate_page_to_gemini_with_retry(page, GEMINI_URL, timeout=60000)
 
         # 2. Select Create video (Veo3) tool
         await _select_create_video(page)
@@ -160,6 +140,7 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
         video_url = await _wait_for_video(page)
         if not video_url:
             update_job(job_id, status=JobStatus.FAILED, error="timeout: no video found within 5 minutes")
+            persist_job(job_id, status=JobStatus.FAILED.value, error="timeout: no video found within 5 minutes")
             return
 
         # 6. Download video locally via browser's authenticated session
@@ -176,6 +157,7 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
 
     except Exception as e:
         update_job(job_id, status=JobStatus.FAILED, error=str(e))
+        persist_job(job_id, status=JobStatus.FAILED.value, error=str(e))
 
     finally:
         if pw:

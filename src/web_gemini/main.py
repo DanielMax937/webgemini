@@ -1,11 +1,21 @@
 import asyncio
+import logging
 import shutil
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+
+# Configure logging so web_gemini module logs (e.g. [job] copy button) appear in stdout/log
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
 from pydantic import BaseModel
 
 from .browser import chrome
@@ -44,6 +54,7 @@ class ChatStatusResponse(BaseModel):
     text: Optional[str] = None
     images: list[dict] = []
     error: Optional[str] = None
+    gemini_url: Optional[str] = None
 
 
 class ImageResponse(BaseModel):
@@ -79,6 +90,13 @@ class VideoStatusResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage browser lifecycle."""
+    from . import db
+
+
+    try:
+        db.init_db()
+    except Exception:
+        pass  # PostgreSQL optional, fallback to in-memory
     await chrome.start_browser()
     cleanup_task = asyncio.create_task(periodic_cleanup())
     yield
@@ -125,6 +143,7 @@ async def get_chat_status(job_id: str) -> ChatStatusResponse:
         text=job.text,
         images=job.images,
         error=job.error,
+        gemini_url=job.gemini_url,
     )
 
 

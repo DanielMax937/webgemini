@@ -1,9 +1,15 @@
 import asyncio
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 CHROME_AUTOMATION_DIR = Path.home() / ".claude/skills/chrome-automation"
+GEMINI_URL = "https://gemini.google.com/app"
+NAVIGATE_MAX_RETRIES = 3
+NAVIGATE_RETRY_INTERVAL = 5
+
+logger = logging.getLogger(__name__)
 CHROME_MANAGER = CHROME_AUTOMATION_DIR / "scripts/chrome_manager.py"
 RUN_SCRIPT = CHROME_AUTOMATION_DIR / "ai_browser_agent/run.py"
 
@@ -77,6 +83,33 @@ class ChromeAutomation:
         # Note: Meta+w keyboard shortcut doesn't work via Playwright
         # Workaround: navigate current tab to blank page
         return await self.run_cmd("act", "--url", "about:blank")
+
+    async def navigate_to_gemini_with_retry(self, url: str = GEMINI_URL) -> None:
+        """
+        导航到 Gemini 页面，失败则关闭重试。
+        最多重试 3 次，每次间隔 5 秒。全部失败则抛出最后一次异常。
+        """
+        last_error = None
+        for attempt in range(NAVIGATE_MAX_RETRIES):
+            try:
+                await self.run_cmd("act", "--url", url)
+                await asyncio.sleep(5 if attempt == 0 else 2)
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "[navigation] act --url attempt %d/%d failed: %s",
+                    attempt + 1,
+                    NAVIGATE_MAX_RETRIES,
+                    str(e)[:100],
+                )
+                if attempt < NAVIGATE_MAX_RETRIES - 1:
+                    try:
+                        await self.close_tab()
+                    except Exception as reset_err:
+                        logger.warning("[navigation] close_tab failed: %s", reset_err)
+                    await asyncio.sleep(NAVIGATE_RETRY_INTERVAL)
+        raise last_error
 
     async def get_page_info(self) -> dict:
         """Get current page info."""

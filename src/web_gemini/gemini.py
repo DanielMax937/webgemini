@@ -1,28 +1,39 @@
 import asyncio
-import subprocess
 import json
+import logging
 import re
+import subprocess
+import time
 from pathlib import Path
-from dataclasses import dataclass
-from enum import Enum
 from typing import Optional
 
+from dataclasses import dataclass
 from playwright.async_api import async_playwright
 
 from .browser import chrome
+from .upload import upload_files
 
+logger = logging.getLogger(__name__)
 IMAGES_DIR = Path(__file__).parent.parent.parent / "images"
+DEBUG_SCREENSHOT_DIR = Path(__file__).parent.parent.parent / "outputs" / "chat_attachments_debug"
 GEMINI_URL = "https://gemini.google.com/app"
 MAX_POLL_TIME = 120  # seconds
 POLL_INTERVAL = 2  # seconds
+SEND_BUTTON_WAIT_TIMEOUT = 600  # 10 minutes - wait for Send button to become clickable
 
 # Gemini selectors (English UI)
 INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
-SEND_BUTTON_SELECTOR = '[aria-label="Send"]'
+# Send button: Gemini uses aria-label="Send message" (not "Send")
+SEND_BUTTON_SELECTORS = [
+    '[aria-label="Send message"]',
+    'button[aria-label="Send message"]',
+    'button.send-button',
+    'button.submit',
+    '[aria-label="Send"]',
+    'button[aria-label="Send"]',
+]
 COPY_BUTTON_SELECTOR = '[aria-label="Copy"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
-UPLOAD_MENU_SELECTOR = '[aria-label="Open upload file menu"]'
-UPLOAD_FILES_SELECTOR = '[aria-label="Upload files. Documents, data, code files"]'
 CDP_URL = "http://localhost:9222"
 
 # Tool selectors
@@ -59,76 +70,111 @@ async def send_prompt(
         tool: Optional tool to use. One of: deep_research, video, image, canvas, tutor
         attachments: Optional list of local file paths to upload
     """
+    run_dir: Path | None = None
+    if attachments:
+        run_dir = DEBUG_SCREENSHOT_DIR / time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        run_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("[attachment] screenshot run_dir: %s", run_dir)
 
-    # Navigate to Gemini (reuse current tab instead of opening new one)
-    await chrome.run_cmd("act", "--url", GEMINI_URL)
-    await asyncio.sleep(5)  # Wait for page to fully load
+    step = 0
+    # 1. Navigate to Gemini (with retry: close and reopen on failure, max 3 times, 5s interval)
+    await chrome.navigate_to_gemini_with_retry(GEMINI_URL)
+    if run_dir:
+        step += 1
+        await _take_screenshot(run_dir, step, "01_after_navigate")
 
     # Select tool if specified
     if tool and tool in TOOL_SELECTORS:
-        # Click tools button to open dropdown
         await chrome.run_cmd("act", "--selector", TOOLS_BUTTON_SELECTOR, "--action", "click")
         await asyncio.sleep(1)
-
-        # Click the specific tool
         await chrome.run_cmd("act", "--selector", TOOL_SELECTORS[tool], "--action", "click")
         await asyncio.sleep(1)
+        if run_dir:
+            step += 1
+            await _take_screenshot(run_dir, step, "02_after_tool_select")
 
     # Upload attachments if provided
     if attachments:
+        if run_dir:
+            step += 1
+            await _take_screenshot(run_dir, step, "03_before_upload")
         await _upload_attachments(attachments)
         await asyncio.sleep(2)
+        if run_dir:
+            step += 1
+            await _take_screenshot(run_dir, step, "04_after_upload")
 
-    # Fill the chat input and press Enter to send
+    # Fill the chat input and send
     await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "fill", "--value", prompt)
     await asyncio.sleep(0.5)
-    await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "press", "--value", "Enter")
+    if run_dir:
+        step += 1
+        await _take_screenshot(run_dir, step, "05_after_fill")
+    # Wait for Send button to become clickable (aria-disabled !== 'true'), max 10 min
+    await _wait_for_send_button_clickable()
+    # Click Send button; fallback to Enter if not found
+    sent = False
+    for sel in SEND_BUTTON_SELECTORS:
+        try:
+            await chrome.run_cmd("act", "--selector", sel, "--action", "click")
+            sent = True
+            break
+        except Exception as e:
+            logger.debug("[send] selector %s failed: %s", sel, str(e)[:80])
+    if not sent:
+        logger.info("[send] Send button not found, falling back to Enter")
+        await chrome.run_cmd("act", "--selector", INPUT_SELECTOR, "--action", "press", "--value", "Enter")
+    await asyncio.sleep(0.5)
+    if run_dir:
+        step += 1
+        await _take_screenshot(run_dir, step, "06_after_click_send")
+    await asyncio.sleep(30)
 
     # Poll until copy button is available
     await _wait_for_copy_button()
+    if run_dir:
+        step += 1
+        await _take_screenshot(run_dir, step, "07_after_wait_copy")
 
     # Get text response via copy button
     text = await _get_text_response()
+    if run_dir:
+        step += 1
+        await _take_screenshot(run_dir, step, "08_after_get_text")
 
     return GeminiResponse(text=text, images=[])
 
 
-async def _upload_attachments(file_paths: list[str]) -> None:
-    """Upload attachment files via the file chooser dialog."""
+async def _take_screenshot(run_dir: Path, step_num: int, step_name: str) -> str | None:
+    """Take screenshot via Playwright. Returns path or None on error."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / f"{step_num:02d}_{step_name}.png"
     pw = None
     try:
         pw = await async_playwright().start()
         browser = await pw.chromium.connect_over_cdp(CDP_URL)
         context = browser.contexts[0]
         page = context.pages[-1] if context.pages else await context.new_page()
+        await page.screenshot(path=str(path))
+        logger.info("[attachment] screenshot: %s", path)
+        return str(path)
+    except Exception as e:
+        logger.warning("[attachment] screenshot failed: %s", e)
+        return None
+    finally:
+        if pw:
+            await pw.stop()
 
-        # Click upload menu
-        await page.click(UPLOAD_MENU_SELECTOR)
-        await asyncio.sleep(1)
 
-        # Trigger file chooser and upload files
-        async with page.expect_file_chooser() as fc_info:
-            await page.click(UPLOAD_FILES_SELECTOR)
-
-        file_chooser = await fc_info.value
-        
-        # Validate all files exist and calculate total size
-        total_size = 0
-        for path in file_paths:
-            if not Path(path).exists():
-                raise FileNotFoundError(f"Attachment file not found: {path}")
-            total_size += Path(path).stat().st_size
-        
-        await file_chooser.set_files(file_paths)
-        
-        # Dynamic wait time based on file count and size
-        # Base 2s + 1s per file + 0.3s per MB
-        file_count = len(file_paths)
-        wait_time = 2 + (file_count * 1) + (total_size / (1024 * 1024) * 0.3)
-        wait_time = min(wait_time, 30)  # Max 30 seconds
-        
-        await asyncio.sleep(wait_time)
-
+async def _upload_attachments(file_paths: list[str]) -> None:
+    """Upload attachment files. Uses CDP to bypass 50MB limit."""
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(CDP_URL)
+        context = browser.contexts[0]
+        page = context.pages[-1] if context.pages else await context.new_page()
+        await upload_files(page, file_paths)
     finally:
         if pw:
             await pw.stop()
@@ -165,17 +211,135 @@ async def _wait_for_copy_button():
     return
 
 
+async def _is_send_button_clickable() -> bool:
+    """Check if Send button is clickable (aria-disabled is not 'true')."""
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(CDP_URL)
+        context = browser.contexts[0]
+        page = context.pages[-1] if context.pages else await context.new_page()
+        clickable = await page.evaluate("""() => {
+            for (const sel of [
+                '[aria-label="Send message"]',
+                'button[aria-label="Send message"]',
+                '[aria-label="Send"]',
+                'button[aria-label="Send"]'
+            ]) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    const ariaDisabled = el.getAttribute('aria-disabled');
+                    return ariaDisabled !== 'true';
+                }
+            }
+            return false;
+        }""")
+        return bool(clickable)
+    except Exception:
+        return False
+    finally:
+        if pw:
+            await pw.stop()
+
+
+async def _wait_for_send_button_clickable() -> None:
+    """Poll until Send button is clickable (aria-disabled !== 'true'), max 10 minutes.
+    Raises TimeoutError if button never becomes clickable."""
+    elapsed = 0
+    while elapsed < SEND_BUTTON_WAIT_TIMEOUT:
+        if await _is_send_button_clickable():
+            logger.info("[send] Send button is clickable after %.0fs", elapsed)
+            return
+        await asyncio.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
+        if elapsed % 30 == 0 and elapsed > 0:
+            logger.info("[send] Waiting for Send button to become clickable... %.0fs elapsed", elapsed)
+    raise TimeoutError(
+        f"Send button did not become clickable within {SEND_BUTTON_WAIT_TIMEOUT}s "
+        "(aria-disabled remained true)"
+    )
+
+
+async def _check_copy_button_exists() -> bool:
+    """Check if Copy button is present in DOM. Used for job logging."""
+    try:
+        dom_json = await chrome.distill_dom(as_json=True)
+        start = dom_json.find("[")
+        if start >= 0:
+            items = json.loads(dom_json[start:])
+            copy_buttons = [
+                item for item in items
+                if item.get("aria_label") == "Copy" and item.get("tag") == "button"
+            ]
+            return len(copy_buttons) > 0
+    except Exception:
+        pass
+    return False
+
+
 async def _get_text_response() -> str:
-    """Click copy button and get text from clipboard."""
+    """Get full Gemini response: prefer copy button (clipboard), fallback to DOM extraction."""
+    # Log whether copy button exists before copy operation
+    has_copy_btn = await _check_copy_button_exists()
+    logger.info("[job] copy button exists before copy: %s", has_copy_btn)
+
+    # 1. Try copy button first (default)
     try:
         await chrome.run_cmd("act", "--selector", COPY_BUTTON_SELECTOR, "--action", "click")
         await asyncio.sleep(0.5)
-
-        # Get clipboard content
         result = subprocess.run(["pbpaste"], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
     except Exception:
         pass
 
+    # 2. Fallback to DOM extraction
+    text = await _get_text_response_via_dom()
+    if text and text.strip():
+        return text.strip()
+
     return ""
+
+
+async def _get_text_response_via_dom() -> str:
+    """Extract full response text from DOM via CDP. More reliable than clipboard."""
+    pw = None
+    try:
+        pw = await async_playwright().start()
+        browser = await pw.chromium.connect_over_cdp(CDP_URL)
+        context = browser.contexts[0]
+        page = context.pages[-1] if context.pages else await context.new_page()
+
+        text = await page.evaluate("""() => {
+            // Find Copy button, then get response from its container
+            const copyBtn = document.querySelector('[aria-label="Copy"]');
+            if (!copyBtn) return '';
+
+            // Traverse up to find message/response container
+            let el = copyBtn;
+            for (let i = 0; i < 15 && el; i++) {
+                el = el.parentElement;
+                if (!el) break;
+                let raw = el.innerText || el.textContent || '';
+                raw = raw.replace(/\\s+/g, ' ').trim();
+                // Response usually 50+ chars; exclude toolbar-only (Copy, Regenerate, etc.)
+                if (raw.length > 80 && !/^\\s*(Copy|Regenerate|Thumbs|More)\\s*$/i.test(raw)) {
+                    // Strip trailing toolbar labels
+                    return raw.replace(/\\s*(Copy|Regenerate|Thumbs up|Thumbs down|More)\\s*$/gi, '').trim();
+                }
+            }
+
+            // Fallback: last model message block
+            const blocks = document.querySelectorAll('[data-message-author-role="model"], [class*="model-response"], [class*="message-content"]');
+            for (let i = blocks.length - 1; i >= 0; i--) {
+                const t = (blocks[i].innerText || blocks[i].textContent || '').replace(/\\s+/g, ' ').trim();
+                if (t.length > 50) return t;
+            }
+            return '';
+        }""")
+        return text or ""
+    except Exception:
+        return ""
+    finally:
+        if pw:
+            await pw.stop()
