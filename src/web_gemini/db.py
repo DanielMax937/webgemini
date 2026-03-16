@@ -47,6 +47,14 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_webgemini_jobs_status ON webgemini_jobs(status);
                 CREATE INDEX IF NOT EXISTS idx_webgemini_jobs_created_at ON webgemini_jobs(created_at);
             """)
+            for col in ("audio_url", "audio_path"):
+                try:
+                    cur.execute(f"ALTER TABLE webgemini_jobs ADD COLUMN {col} TEXT")
+                    conn.commit()
+                except psycopg2.ProgrammingError as e:
+                    if "already exists" not in str(e):
+                        raise
+                    conn.rollback()
             conn.commit()
     finally:
         conn.close()
@@ -91,6 +99,8 @@ def update_job_db(
     images: Optional[list] = None,
     video_url: Optional[str] = None,
     local_path: Optional[str] = None,
+    audio_url: Optional[str] = None,
+    audio_path: Optional[str] = None,
     error: Optional[str] = None,
     gemini_url: Optional[str] = None,
 ) -> None:
@@ -114,6 +124,12 @@ def update_job_db(
         if local_path is not None:
             updates.append("local_path = %s")
             values.append(local_path)
+        if audio_url is not None:
+            updates.append("audio_url = %s")
+            values.append(audio_url)
+        if audio_path is not None:
+            updates.append("audio_path = %s")
+            values.append(audio_path)
         if error is not None:
             updates.append("error = %s")
             values.append(error)

@@ -1,6 +1,6 @@
 # Web Gemini API
 
-通过浏览器自动化与 Gemini Web 交互的 FastAPI 服务，支持文本对话、Veo3 视频生成、图片生成。
+通过浏览器自动化与 Gemini Web 交互的 FastAPI 服务，支持文本对话、Veo3 视频生成、图片生成、音乐生成。
 
 ## 数据持久化
 
@@ -62,6 +62,16 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 ### GET /image/{job_id}
 
 查询图片任务状态。
+
+### POST /music
+
+提交音乐生成任务（Form: prompt + 可选 images）。生成完成后通过 Gemini 的 "Download track" 按钮下载音频到本地。
+
+**Response**: `{ "job_id", "status" }`
+
+### GET /music/{job_id}
+
+查询音乐任务状态。`audio_url`、`local_path` 在完成后返回。`local_path` 为本地保存的音频文件路径。
 
 ### GET /health
 

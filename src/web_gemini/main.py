@@ -30,6 +30,7 @@ from .jobs import (
     update_job,
 )
 from .video import generate_video
+from .music import generate_music
 
 ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -83,6 +84,19 @@ class VideoStatusResponse(BaseModel):
     job_id: str
     status: str
     video_url: Optional[str] = None
+    local_path: Optional[str] = None
+    error: Optional[str] = None
+
+
+class MusicJobResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+class MusicStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    audio_url: Optional[str] = None
     local_path: Optional[str] = None
     error: Optional[str] = None
 
@@ -260,6 +274,61 @@ async def get_image_status(job_id: str) -> ImageStatusResponse:
         job_id=job.job_id,
         status=job.status.value,
         images=job.images,
+        error=job.error,
+    )
+
+
+@app.post("/music", response_model=MusicJobResponse)
+async def create_music(
+    prompt: str = Form(...),
+    images: list[UploadFile] = File(default=[]),
+) -> MusicJobResponse:
+    """Submit a music generation job with prompt and optional reference images."""
+    if len(images) > MAX_IMAGES:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_IMAGES} images allowed")
+
+    saved_paths: list[str] = []
+    if images:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for img in images:
+            if img.content_type not in ALLOWED_IMAGE_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
+                )
+            content = await img.read()
+            if len(content) > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
+
+            dest = UPLOAD_DIR / f"{img.filename}"
+            dest.write_bytes(content)
+            saved_paths.append(str(dest))
+
+    job = create_job(prompt=prompt, image_paths=saved_paths if saved_paths else None)
+
+    async def _run_job():
+        async with chrome.lock:
+            await generate_music(job.job_id, job.prompt, job.image_paths or [])
+        for p in saved_paths:
+            Path(p).unlink(missing_ok=True)
+
+    task = asyncio.create_task(_run_job())
+    register_task(job.job_id, task)
+
+    return MusicJobResponse(job_id=job.job_id, status=job.status.value)
+
+
+@app.get("/music/{job_id}", response_model=MusicStatusResponse)
+async def get_music_status(job_id: str) -> MusicStatusResponse:
+    """Check the status of a music generation job."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return MusicStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        audio_url=job.audio_url,
+        local_path=job.audio_path,
         error=job.error,
     )
 

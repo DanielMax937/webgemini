@@ -29,6 +29,9 @@ class Job:
     # Video results
     video_url: Optional[str] = None
     local_path: Optional[str] = None
+    # Music results
+    audio_url: Optional[str] = None
+    audio_path: Optional[str] = None
     error: Optional[str] = None
     gemini_url: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -111,6 +114,8 @@ def get_job(job_id: str) -> Optional[Job]:
                     images=row.get("images") or [],
                     video_url=row.get("video_url"),
                     local_path=row.get("local_path"),
+                    audio_url=row.get("audio_url"),
+                    audio_path=row.get("audio_path"),
                     error=row.get("error"),
                     gemini_url=row.get("gemini_url"),
                     created_at=created,
