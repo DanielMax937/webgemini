@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from .browser import chrome
 from .chat import process_chat
+from .grok_chat import process_grok_chat
 from .image import generate_image as generate_image_func
 from .jobs import (
     JobStatus,
@@ -103,7 +104,7 @@ class MusicStatusResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage browser lifecycle."""
+    """App startup/shutdown. Chrome is started/stopped by ./start-bg.sh / ./stop-bg.sh (``web_gemini.chrome_automation.manager``), not here."""
     from . import db
 
 
@@ -111,14 +112,16 @@ async def lifespan(app: FastAPI):
         db.init_db()
     except Exception:
         pass  # PostgreSQL optional, fallback to in-memory
-    await chrome.start_browser()
     cleanup_task = asyncio.create_task(periodic_cleanup())
     yield
     cleanup_task.cancel()
-    await chrome.stop_browser()
 
 
-app = FastAPI(title="Gemini Web Service", lifespan=lifespan)
+app = FastAPI(
+    title="Gemini & Grok Web Service",
+    description="Browser automation for Gemini (gemini.google.com) and Grok on X (x.com/i/grok).",
+    lifespan=lifespan,
+)
 
 
 @app.post("/chat", response_model=ChatJobResponse)
@@ -148,6 +151,46 @@ async def chat(request: ChatRequest) -> ChatJobResponse:
 @app.get("/chat/{job_id}", response_model=ChatStatusResponse)
 async def get_chat_status(job_id: str) -> ChatStatusResponse:
     """Check the status of a chat job."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return ChatStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        text=job.text,
+        images=job.images,
+        error=job.error,
+        gemini_url=job.gemini_url,
+    )
+
+
+@app.post("/grok/chat", response_model=ChatJobResponse)
+async def grok_chat(request: ChatRequest) -> ChatJobResponse:
+    """Submit a chat job against Grok on X (https://x.com/i/grok). Same body as POST /chat."""
+    job = create_job(
+        prompt=request.prompt,
+        tool=request.tool,
+        attachments=request.attachments,
+    )
+
+    async def _run_job():
+        async with chrome.lock:
+            await process_grok_chat(
+                job.job_id,
+                job.prompt,
+                job.tool,
+                job.attachments,
+            )
+
+    task = asyncio.create_task(_run_job())
+    register_task(job.job_id, task)
+
+    return ChatJobResponse(job_id=job.job_id, status=job.status.value)
+
+
+@app.get("/grok/chat/{job_id}", response_model=ChatStatusResponse)
+async def get_grok_chat_status(job_id: str) -> ChatStatusResponse:
+    """Poll Grok chat job status (same shape as GET /chat/{job_id}; ``gemini_url`` holds the X page URL)."""
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

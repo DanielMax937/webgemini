@@ -9,5 +9,9 @@ wheels/
 # Virtual environments
 .venv
 browser_profile/
+# Local runtime (do not commit)
+webgemini.log
+webgemini.pid
+chrome_data/
 outputs/
 images/

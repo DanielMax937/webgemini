@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from playwright.async_api import async_playwright
 
 from .browser import chrome
+from .chrome_automation.paths import CDP_URL
 from .upload import upload_files
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,6 @@ SEND_BUTTON_SELECTORS = [
 ]
 COPY_BUTTON_SELECTOR = '[aria-label="Copy"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
-CDP_URL = "http://localhost:9222"
-
 # Tool selectors
 TOOL_SELECTORS = {
     "deep_research": 'button:has-text("Deep Research")',

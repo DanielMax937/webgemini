@@ -1,6 +1,6 @@
 # Web Gemini API
 
-通过浏览器自动化与 Gemini Web 交互的 FastAPI 服务，支持文本对话、Veo3 视频生成、图片生成、音乐生成。
+通过浏览器自动化与 **Gemini Web** 及 **X 上的 Grok**（`https://x.com/i/grok`）交互的 FastAPI 服务，支持文本对话、Veo3 视频生成、图片生成、音乐生成。
 
 ## 数据持久化
 
@@ -42,6 +42,35 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 **Response**: `{ "job_id", "status", "text", "images", "error", "gemini_url" }`
 
 - `gemini_url`: 返回结果时当前 Gemini 页面 URL，便于追溯对话来源
+
+### POST /grok/chat
+
+向 **Grok（X / `https://x.com/i/grok`）** 提交聊天任务，异步执行，**请求体与** `POST /chat` **相同**。
+
+**Request body**（与 `/chat` 一致）:
+```json
+{
+  "prompt": "string",
+  "tool": "string (optional, 当前 Grok Web 集成会忽略)",
+  "attachments": ["local/file/path"]
+}
+```
+
+- `attachments`：当前 Grok 集成**不执行上传**（会记日志）；需要附件时请用 `POST /chat`（Gemini）。
+
+**Response**: `{ "job_id": "xxx", "status": "pending" }`
+
+### GET /grok/chat/{job_id}
+
+查询 Grok 聊天任务状态，**响应字段与** `GET /chat/{job_id}` **相同**。
+
+- `gemini_url`：此处存放任务完成时浏览器中的 **X 页面 URL**（字段名与 Gemini 接口一致，便于客户端复用）。
+
+#### Grok 自动化行为说明
+
+- **前置**：Web Gemini 启动的 Chrome（CDP）需能打开 `https://x.com/i/grok`，且 **X 账号已登录**；否则无法对话。
+- **提交消息**：Grok 输入框为多行，单独按 Enter 只会换行；服务端在 `grok.py` 中使用 **Ctrl+Enter（Control+Enter）** 提交 prompt，与 X Web 一致。
+- **模式（Auto / Fast / Expert）**：当前 **HTTP API 不切换** 模式，沿用用户在页面里已选或默认项；需在 Grok 页手动选模式后再跑任务，或后续扩展自动化。
 
 ### POST /video
 

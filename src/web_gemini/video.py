@@ -7,6 +7,7 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, Page, BrowserContext
 
+from .chrome_automation.paths import CDP_URL
 from .jobs import JobStatus, persist_job, update_job
 from .navigation import navigate_page_to_gemini_with_retry
 from .upload import upload_files
@@ -21,8 +22,6 @@ INPUT_SELECTOR = '[aria-label="Enter a prompt for Gemini"]'
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
 CREATE_VIDEO_SELECTOR = 'button.mat-mdc-list-item:has-text("Create video")'
 MODE_PICKER_SELECTOR = '[aria-label="Open mode picker"]'
-
-CDP_URL = "http://localhost:9222"
 
 
 @dataclass

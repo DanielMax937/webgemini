@@ -7,10 +7,18 @@ PORT="${PORT:-8200}"
 PID_FILE="${WG_PID_FILE:-./webgemini.pid}"
 LOG_FILE="${WG_LOG_FILE:-./webgemini.log}"
 
+chrome_start() {
+  echo "Starting Chrome (bundled web_gemini.chrome_automation.manager, CDP 9222)..."
+  env PYTHONPATH=src uv run python -m web_gemini.chrome_automation.manager start
+  echo "✓ Chrome ready at http://127.0.0.1:9222 (profile: ./chrome_data/chrome-profile)"
+}
+
 if lsof -ti:"$PORT" >/dev/null 2>&1; then
   echo "Port $PORT already in use. Stop the service first with: ./stop-bg.sh"
   exit 1
 fi
+
+chrome_start
 
 echo "──────────────────────────────────────────"
 echo "  Web Gemini (FastAPI)"
