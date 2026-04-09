@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 from pydantic import BaseModel
 
-from .browser import chrome
+from .concurrency import TASK_TIMEOUT_S, concurrency_slot, metrics as concurrency_metrics
 from .chat import process_chat
 from .grok_chat import process_grok_chat
 from .image import generate_image as generate_image_func
@@ -29,6 +29,7 @@ from .jobs import (
     periodic_cleanup,
     register_task,
     update_job,
+    persist_job,
 )
 from .video import generate_video
 from .music import generate_music
@@ -132,20 +133,26 @@ async def chat(request: ChatRequest) -> ChatJobResponse:
         tool=request.tool,
         attachments=request.attachments,
     )
+    update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
-        async with chrome.lock:
-            await process_chat(
-                job.job_id,
-                job.prompt,
-                job.tool,
-                job.attachments,
-            )
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    process_chat(job.job_id, job.prompt, job.tool, job.attachments),
+                    timeout=TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
 
     task = asyncio.create_task(_run_job())
     register_task(job.job_id, task)
 
-    return ChatJobResponse(job_id=job.job_id, status=job.status.value)
+    return ChatJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
 
 
 @app.get("/chat/{job_id}", response_model=ChatStatusResponse)
@@ -172,20 +179,26 @@ async def grok_chat(request: ChatRequest) -> ChatJobResponse:
         tool=request.tool,
         attachments=request.attachments,
     )
+    update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
-        async with chrome.lock:
-            await process_grok_chat(
-                job.job_id,
-                job.prompt,
-                job.tool,
-                job.attachments,
-            )
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    process_grok_chat(job.job_id, job.prompt, job.tool, job.attachments),
+                    timeout=TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
 
     task = asyncio.create_task(_run_job())
     register_task(job.job_id, task)
 
-    return ChatJobResponse(job_id=job.job_id, status=job.status.value)
+    return ChatJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
 
 
 @app.get("/grok/chat/{job_id}", response_model=ChatStatusResponse)
@@ -234,18 +247,29 @@ async def create_video(
         saved_paths.append(str(dest))
 
     job = create_job(prompt=prompt, image_paths=saved_paths)
+    update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
-        async with chrome.lock:
-            await generate_video(job.job_id, job.prompt, job.image_paths)
-        # Cleanup temp images after job completes
-        for p in saved_paths:
-            Path(p).unlink(missing_ok=True)
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    generate_video(job.job_id, job.prompt, job.image_paths),
+                    timeout=TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
+        finally:
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
 
     task = asyncio.create_task(_run_job())
     register_task(job.job_id, task)
 
-    return VideoJobResponse(job_id=job.job_id, status=job.status.value)
+    return VideoJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
 
 
 @app.get("/video/{job_id}", response_model=VideoStatusResponse)
@@ -293,18 +317,29 @@ async def create_image(
         saved_paths.append(str(dest))
 
     job = create_job(prompt=prompt, image_paths=saved_paths)
+    update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
-        async with chrome.lock:
-            await generate_image_func(job.job_id, job.prompt, job.image_paths)
-        # Cleanup temp images after job completes
-        for p in saved_paths:
-            Path(p).unlink(missing_ok=True)
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    generate_image_func(job.job_id, job.prompt, job.image_paths),
+                    timeout=TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
+        finally:
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
 
     task = asyncio.create_task(_run_job())
     register_task(job.job_id, task)
 
-    return ImageJobResponse(job_id=job.job_id, status=job.status.value)
+    return ImageJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
 
 
 @app.get("/image/{job_id}", response_model=ImageStatusResponse)
@@ -348,17 +383,29 @@ async def create_music(
             saved_paths.append(str(dest))
 
     job = create_job(prompt=prompt, image_paths=saved_paths if saved_paths else None)
+    update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
-        async with chrome.lock:
-            await generate_music(job.job_id, job.prompt, job.image_paths or [])
-        for p in saved_paths:
-            Path(p).unlink(missing_ok=True)
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    generate_music(job.job_id, job.prompt, job.image_paths or []),
+                    timeout=TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
+        finally:
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
 
     task = asyncio.create_task(_run_job())
     register_task(job.job_id, task)
 
-    return MusicJobResponse(job_id=job.job_id, status=job.status.value)
+    return MusicJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
 
 
 @app.get("/music/{job_id}", response_model=MusicStatusResponse)
@@ -374,6 +421,17 @@ async def get_music_status(job_id: str) -> MusicStatusResponse:
         local_path=job.audio_path,
         error=job.error,
     )
+
+
+@app.get("/metrics")
+async def metrics():
+    """Concurrency and queue observability metrics."""
+    m = concurrency_metrics()
+    return {
+        "active_slots": m["active"],
+        "queued_tasks": m["queued"],
+        "max_concurrent": m["max_concurrent"],
+    }
 
 
 @app.get("/health")

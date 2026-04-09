@@ -105,16 +105,16 @@ async def _download_video_via_browser(page: Page, url: str, local_path: Path) ->
 async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> None:
     """Full Veo3 video generation flow. Updates job state throughout.
 
-    This function is meant to be run as a background task.
-    It acquires no lock — the caller should hold chrome.lock.
+    This function is meant to be run as a background task inside a concurrency slot.
     """
     update_job(job_id, status=JobStatus.PROCESSING)
     persist_job(job_id, status=JobStatus.PROCESSING.value)
 
     pw = None
+    page = None
     try:
         pw, browser, context = await _connect_to_chrome()
-        page = context.pages[-1] if context.pages else await context.new_page()
+        page = await context.new_page()
 
         # 1. Navigate to fresh Gemini conversation (with retry: close and reopen, max 3 times, 5s interval)
         await navigate_page_to_gemini_with_retry(page, GEMINI_URL, timeout=60000)
@@ -159,5 +159,10 @@ async def generate_video(job_id: str, prompt: str, image_paths: list[str]) -> No
         persist_job(job_id, status=JobStatus.FAILED.value, error=str(e))
 
     finally:
+        try:
+            if page and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
         if pw:
             await pw.stop()

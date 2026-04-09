@@ -10,6 +10,7 @@ from . import db as db_module
 
 class JobStatus(str, Enum):
     PENDING = "pending"
+    QUEUED = "queued"       # waiting for a concurrency slot
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"

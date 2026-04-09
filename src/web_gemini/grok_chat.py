@@ -2,9 +2,9 @@
 
 from typing import Optional
 
-from .browser import chrome
 from .grok import GROK_URL, send_prompt
 from .jobs import JobStatus, persist_job, update_job
+from .page_context import task_page
 
 
 async def process_grok_chat(
@@ -13,20 +13,16 @@ async def process_grok_chat(
     tool: Optional[str] = None,
     attachments: Optional[list[str]] = None,
 ) -> None:
-    """Process a Grok chat job; caller must hold ``chrome.lock``."""
+    """Process a Grok chat job: open dedicated tab, run automation, close tab.
+
+    The caller must hold a concurrency slot (via ``concurrency_slot``).
+    """
     update_job(job_id, status=JobStatus.PROCESSING)
     persist_job(job_id, status=JobStatus.PROCESSING.value)
 
     try:
-        result = await send_prompt(prompt, tool, attachments)
-
-        page_url = GROK_URL
-        try:
-            page_info = await chrome.get_page_info()
-            if page_info.get("url"):
-                page_url = page_info["url"]
-        except Exception:
-            pass
+        async with task_page(job_id) as page:
+            result = await send_prompt(prompt, tool, attachments, page=page, job_id=job_id)
 
         images_data = [
             {"url": img.url, "local_path": img.local_path}
@@ -38,15 +34,16 @@ async def process_grok_chat(
             status=JobStatus.COMPLETED,
             text=result.text,
             images=images_data,
-            gemini_url=page_url,
+            gemini_url=GROK_URL,
         )
         persist_job(
             job_id,
             status=JobStatus.COMPLETED.value,
             text=result.text,
             images=images_data,
-            gemini_url=page_url,
+            gemini_url=GROK_URL,
         )
     except Exception as e:
         update_job(job_id, status=JobStatus.FAILED, error=str(e))
         persist_job(job_id, status=JobStatus.FAILED.value, error=str(e))
+

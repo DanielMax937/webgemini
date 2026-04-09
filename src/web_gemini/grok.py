@@ -2,12 +2,10 @@
 
 import asyncio
 import logging
-import subprocess
 
-from playwright.async_api import async_playwright
+from playwright.async_api import Page
 
-from .browser import chrome
-from .chrome_automation.paths import CDP_URL
+from .concurrency import clipboard_section, USE_DOM_EXTRACTION
 from .gemini import GeminiResponse, _wait_for_copy_button
 
 logger = logging.getLogger(__name__)
@@ -32,109 +30,109 @@ async def send_prompt(
     prompt: str,
     tool: str | None = None,
     attachments: list[str] | None = None,
+    page: Page | None = None,
+    job_id: str = "",
 ) -> GeminiResponse:
-    """Send prompt to Grok on X and wait for response (same contract as ``gemini.send_prompt``).
+    """Send prompt to Grok on X and wait for response.
 
-    ``tool`` is ignored (Grok web has no Gemini-style Tools menu in this integration).
-    ``attachments`` are not uploaded in this version (logged); use Gemini ``/chat`` for file flows.
+    Args:
+        prompt: The prompt to send
+        tool: Ignored (Grok web has no Gemini-style Tools menu)
+        attachments: Not uploaded in this integration (logged only)
+        page: Playwright Page bound to this task's dedicated tab (required)
+        job_id: Task ID used for clipboard mutex and logging
     """
-    if tool:
-        logger.info("[grok] ignoring tool=%s (not supported on Grok web)", tool)
-    if attachments:
-        logger.warning(
-            "[grok] attachments are not supported on Grok web in this build; paths=%s",
-            attachments,
-        )
+    if page is None:
+        raise ValueError("send_prompt requires a 'page' argument (task-bound tab)")
 
-    await chrome.navigate_to_gemini_with_retry(GROK_URL)
+    if tool:
+        logger.info("[grok] job=%s ignoring tool=%s (not supported)", job_id, tool)
+    if attachments:
+        logger.warning("[grok] job=%s attachments not supported; paths=%s", job_id, attachments)
+
+    await page.goto(GROK_URL, wait_until="domcontentloaded", timeout=120_000)
     await asyncio.sleep(3)
 
-    await _type_and_send_grok(prompt)
+    await _type_and_send_grok(page, prompt, job_id)
     await asyncio.sleep(2)
-    await _wait_for_copy_button()
+    await _wait_for_copy_button(page)
     await asyncio.sleep(0.5)
 
-    text = await _get_text_response()
+    text = await _get_text_response(page, job_id)
     if not text.strip():
-        text = await _get_grok_text_via_dom()
+        text = await _get_grok_text_via_dom(page)
 
     return GeminiResponse(text=text.strip(), images=[])
 
 
-async def _type_and_send_grok(prompt: str) -> None:
-    """Focus Grok composer, insert text, send (Ctrl+Enter).
-
-    Grok's composer is multiline: plain Enter only inserts a newline; Ctrl+Enter submits
-    (matches X web UI). Uses Playwright over CDP.
-    """
-    pw = None
-    try:
-        pw = await async_playwright().start()
-        browser = await pw.chromium.connect_over_cdp(CDP_URL)
-        context = browser.contexts[0]
-        page = context.pages[-1] if context.pages else await context.new_page()
-
-        for sel in GROK_INPUT_SELECTORS:
-            loc = page.locator(sel).first
-            try:
-                await loc.wait_for(state="visible", timeout=15_000)
-                await loc.click(timeout=10_000)
-                tag = await loc.evaluate("el => el.tagName.toLowerCase()")
-                is_ce = await loc.evaluate(
-                    "el => el.getAttribute('contenteditable') === 'true'"
+async def _type_and_send_grok(page: Page, prompt: str, job_id: str) -> None:
+    """Focus Grok composer on *page*, insert text, send via Ctrl+Enter."""
+    for sel in GROK_INPUT_SELECTORS:
+        loc = page.locator(sel).first
+        try:
+            await loc.wait_for(state="visible", timeout=15_000)
+            await loc.click(timeout=10_000)
+            tag = await loc.evaluate("el => el.tagName.toLowerCase()")
+            is_ce = await loc.evaluate("el => el.getAttribute('contenteditable') === 'true'")
+            if tag == "textarea" or not is_ce:
+                try:
+                    await loc.fill(prompt, timeout=30_000)
+                except Exception:
+                    await loc.press_sequentially(prompt, delay=15)
+            else:
+                await loc.evaluate(
+                    """(el, text) => {
+                      el.focus();
+                      el.innerHTML = '';
+                      document.execCommand('insertText', false, text);
+                    }""",
+                    prompt,
                 )
-                if tag == "textarea" or not is_ce:
-                    try:
-                        await loc.fill(prompt, timeout=30_000)
-                    except Exception:
-                        await loc.press_sequentially(prompt, delay=15)
-                else:
-                    await loc.evaluate(
-                        """(el, text) => {
-                          el.focus();
-                          el.innerHTML = '';
-                          document.execCommand('insertText', false, text);
-                        }""",
-                        prompt,
-                    )
-                await asyncio.sleep(0.4)
-                await page.keyboard.press("Control+Enter")
-                logger.info("[grok] sent via selector %s", sel)
-                return
-            except Exception as e:
-                logger.debug("[grok] selector %s failed: %s", sel, str(e)[:120])
-                continue
+            await asyncio.sleep(0.4)
+            await page.keyboard.press("Control+Enter")
+            logger.info("[grok] job=%s sent via selector %s", job_id, sel)
+            return
+        except Exception as e:
+            logger.debug("[grok] job=%s selector %s failed: %s", job_id, sel, str(e)[:120])
+            continue
 
-        raise RuntimeError(
-            "Could not find Grok input (textarea/contenteditable). "
-            "Open https://x.com/i/grok in the automated Chrome and check the composer DOM."
-        )
-    finally:
-        if pw:
-            await pw.stop()
+    raise RuntimeError(
+        "Could not find Grok input (textarea/contenteditable). "
+        "Open https://x.com/i/grok in the automated Chrome and check the composer DOM."
+    )
 
 
-async def _get_text_response() -> str:
-    """Prefer Copy button + clipboard; fallback to Grok/X DOM extraction."""
+async def _get_text_response(page: Page, job_id: str) -> str:
+    """Get Grok response: clipboard (mutex) first, fallback to DOM."""
+    if USE_DOM_EXTRACTION:
+        logger.info("[grok] job=%s using DOM extraction (clipboard skipped)", job_id)
+        return await _get_grok_text_via_dom(page)
+
+    clipboard_text: str = ""
     try:
-        await chrome.run_cmd("act", "--selector", COPY_BUTTON_SELECTOR, "--action", "click")
-        await asyncio.sleep(0.5)
-        result = subprocess.run(["pbpaste"], capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return await _get_grok_text_via_dom()
+        async with clipboard_section(job_id):
+            await page.locator(COPY_BUTTON_SELECTOR).first.click(timeout=30_000)
+            await asyncio.sleep(0.5)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: __import__("subprocess").run(
+                    ["pbpaste"], capture_output=True, text=True
+                ),
+            )
+            if result.returncode == 0:
+                clipboard_text = result.stdout
+    except Exception as e:
+        logger.warning("[grok] job=%s clipboard path failed: %s", job_id, e)
+
+    if clipboard_text.strip():
+        return clipboard_text.strip()
+
+    return await _get_grok_text_via_dom(page)
 
 
-async def _get_grok_text_via_dom() -> str:
-    """Extract last Grok reply from X DOM."""
-    pw = None
+async def _get_grok_text_via_dom(page: Page) -> str:
+    """Extract last Grok reply from X DOM of *page*."""
     try:
-        pw = await async_playwright().start()
-        browser = await pw.chromium.connect_over_cdp(CDP_URL)
-        context = browser.contexts[0]
-        page = context.pages[-1] if context.pages else await context.new_page()
         text = await page.evaluate("""() => {
           const copyBtn = document.querySelector('[aria-label="Copy"]');
           if (copyBtn) {
@@ -158,6 +156,4 @@ async def _get_grok_text_via_dom() -> str:
         return text or ""
     except Exception:
         return ""
-    finally:
-        if pw:
-            await pw.stop()
+

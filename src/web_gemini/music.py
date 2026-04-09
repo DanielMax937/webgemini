@@ -204,8 +204,7 @@ async def generate_music(
 ) -> None:
     """Full music generation flow. Updates job state throughout.
 
-    This function is meant to be run as a background task.
-    It acquires no lock — the caller should hold chrome.lock.
+    This function is meant to be run as a background task inside a concurrency slot.
     Takes screenshot at each step and sends via Telegram send-file.
     """
     update_job(job_id, status=JobStatus.PROCESSING)
@@ -216,10 +215,11 @@ async def generate_music(
     logger.info("[music] screenshot run_dir: %s", run_dir)
 
     pw = None
+    page = None
     step = 0
     try:
         pw, browser, context = await _connect_to_chrome()
-        page = context.pages[-1] if context.pages else await context.new_page()
+        page = await context.new_page()
 
         await navigate_page_to_gemini_with_retry(page, GEMINI_URL, timeout=60000)
         step += 1
@@ -311,6 +311,11 @@ async def generate_music(
         persist_job(job_id, status=JobStatus.FAILED.value, error=str(e))
 
     finally:
+        try:
+            if page and not page.is_closed():
+                await page.close()
+        except Exception:
+            pass
         if pw:
             await pw.stop()
         _send_screenshots_to_telegram(run_dir, job_id)

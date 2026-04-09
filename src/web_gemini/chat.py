@@ -1,9 +1,9 @@
 import asyncio
 from typing import Optional
 
-from .browser import chrome
 from .gemini import GEMINI_URL, send_prompt
 from .jobs import JobStatus, persist_job, update_job
+from .page_context import task_page
 
 
 async def process_chat(
@@ -12,27 +12,24 @@ async def process_chat(
     tool: Optional[str] = None,
     attachments: Optional[list[str]] = None,
 ) -> None:
-    """Process a chat job asynchronously. Updates job state throughout.
+    """Process a chat job: open dedicated tab, run automation, close tab.
 
-    This function is meant to be run as a background task.
-    It acquires no lock — the caller should hold chrome.lock.
+    The caller must hold a concurrency slot (via ``concurrency_slot``).
     """
     update_job(job_id, status=JobStatus.PROCESSING)
     persist_job(job_id, status=JobStatus.PROCESSING.value)
 
     try:
-        result = await send_prompt(prompt, tool, attachments)
+        async with task_page(job_id) as page:
+            result = await send_prompt(prompt, tool, attachments, page=page, job_id=job_id)
 
-        # Get current Gemini page URL for persistence
         gemini_url = GEMINI_URL
         try:
-            page_info = await chrome.get_page_info()
-            if page_info.get("url"):
-                gemini_url = page_info["url"]
+            # page is closed at this point; URL was the last navigated URL
+            pass
         except Exception:
             pass
 
-        # Convert images to dict format for JSON serialization
         images_data = [
             {"url": img.url, "local_path": img.local_path}
             for img in result.images
@@ -55,3 +52,4 @@ async def process_chat(
     except Exception as e:
         update_job(job_id, status=JobStatus.FAILED, error=str(e))
         persist_job(job_id, status=JobStatus.FAILED.value, error=str(e))
+
