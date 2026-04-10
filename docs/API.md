@@ -33,7 +33,7 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 }
 ```
 
-**Response**: `{ "job_id": "xxx", "status": "pending" }`
+**Response**: `{ "job_id": "xxx", "status": "queued" }`
 
 ### GET /chat/{job_id}
 
@@ -58,7 +58,7 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 
 - `attachments`：当前 Grok 集成**不执行上传**（会记日志）；需要附件时请用 `POST /chat`（Gemini）。
 
-**Response**: `{ "job_id": "xxx", "status": "pending" }`
+**Response**: `{ "job_id": "xxx", "status": "queued" }`
 
 ### GET /grok/chat/{job_id}
 
@@ -74,9 +74,12 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 
 ### POST /video
 
-提交 Veo3 视频生成任务（Form: prompt + images）。
+提交 Veo3 视频生成任务（`multipart/form-data`）。
 
-**Response**: `{ "job_id", "status" }`
+- **`prompt`**（string，必填）：文本提示。
+- **`images`**（file[]，**可选**）：参考图。可**省略该字段**，或上传 **0 张**（空数组语义）。若提供，最多 **5** 张；单张不超过 **10MB**；类型：`image/png`、`image/jpeg`、`image/gif`、`image/webp`。
+
+**Response**: `{ "job_id": "...", "status": "queued" }`
 
 ### GET /video/{job_id}
 
@@ -84,9 +87,12 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 
 ### POST /image
 
-提交图片生成任务（Form: prompt + images）。
+提交图片生成任务（`multipart/form-data`）。
 
-**Response**: `{ "job_id", "status" }`
+- **`prompt`**（string，必填）：文本提示。
+- **`images`**（file[]，**可选**）：参考图。可**省略该字段**，或上传 **0 张**。若提供，最多 **5** 张；单张不超过 **10MB**；类型：`image/png`、`image/jpeg`、`image/gif`、`image/webp`。无参考图时仅按 `prompt` 走「Create image」流程。
+
+**Response**: `{ "job_id": "...", "status": "queued" }`
 
 ### GET /image/{job_id}
 
@@ -94,9 +100,12 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 
 ### POST /music
 
-提交音乐生成任务（Form: prompt + 可选 images）。生成完成后通过 Gemini 的 "Download track" 按钮下载音频到本地。
+提交音乐生成任务（`multipart/form-data`）。
 
-**Response**: `{ "job_id", "status" }`
+- **`prompt`**（string，必填）：文本提示。
+- **`images`**（file[]，**可选**）：参考图。可**省略该字段**，或上传 **0 张**。若提供，最多 **5** 张；单张不超过 **10MB**；类型：`image/png`、`image/jpeg`、`image/gif`、`image/webp`。生成完成后通过 Gemini 的 "Download track" 按钮下载音频到本地。
+
+**Response**: `{ "job_id": "...", "status": "queued" }`
 
 ### GET /music/{job_id}
 

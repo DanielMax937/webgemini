@@ -220,33 +220,30 @@ async def get_grok_chat_status(job_id: str) -> ChatStatusResponse:
 @app.post("/video", response_model=VideoJobResponse)
 async def create_video(
     prompt: str = Form(...),
-    images: list[UploadFile] = File(...),
+    images: list[UploadFile] = File(default=[]),
 ) -> VideoJobResponse:
-    """Submit a Veo3 video generation job with prompt and reference images."""
+    """Submit a Veo3 video generation job with prompt and optional reference images."""
     if len(images) > MAX_IMAGES:
         raise HTTPException(status_code=400, detail=f"Maximum {MAX_IMAGES} images allowed")
-    if len(images) == 0:
-        raise HTTPException(status_code=400, detail="At least one image is required")
 
-    # Validate and save uploaded images to temp directory
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
+    if images:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for img in images:
+            if img.content_type not in ALLOWED_IMAGE_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
+                )
+            content = await img.read()
+            if len(content) > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
 
-    for img in images:
-        if img.content_type not in ALLOWED_IMAGE_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
-            )
-        content = await img.read()
-        if len(content) > MAX_IMAGE_SIZE:
-            raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
+            dest = UPLOAD_DIR / f"{img.filename}"
+            dest.write_bytes(content)
+            saved_paths.append(str(dest))
 
-        dest = UPLOAD_DIR / f"{img.filename}"
-        dest.write_bytes(content)
-        saved_paths.append(str(dest))
-
-    job = create_job(prompt=prompt, image_paths=saved_paths)
+    job = create_job(prompt=prompt, image_paths=saved_paths if saved_paths else None)
     update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():
@@ -290,33 +287,30 @@ async def get_video_status(job_id: str) -> VideoStatusResponse:
 @app.post("/image", response_model=ImageJobResponse)
 async def create_image(
     prompt: str = Form(...),
-    images: list[UploadFile] = File(...),
+    images: list[UploadFile] = File(default=[]),
 ) -> ImageJobResponse:
-    """Submit an image generation job with prompt and reference images."""
+    """Submit an image generation job with prompt and optional reference images."""
     if len(images) > MAX_IMAGES:
         raise HTTPException(status_code=400, detail=f"Maximum {MAX_IMAGES} images allowed")
-    if len(images) == 0:
-        raise HTTPException(status_code=400, detail="At least one image is required")
 
-    # Validate and save uploaded images to temp directory
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
+    if images:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for img in images:
+            if img.content_type not in ALLOWED_IMAGE_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
+                )
+            content = await img.read()
+            if len(content) > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
 
-    for img in images:
-        if img.content_type not in ALLOWED_IMAGE_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
-            )
-        content = await img.read()
-        if len(content) > MAX_IMAGE_SIZE:
-            raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
+            dest = UPLOAD_DIR / f"{img.filename}"
+            dest.write_bytes(content)
+            saved_paths.append(str(dest))
 
-        dest = UPLOAD_DIR / f"{img.filename}"
-        dest.write_bytes(content)
-        saved_paths.append(str(dest))
-
-    job = create_job(prompt=prompt, image_paths=saved_paths)
+    job = create_job(prompt=prompt, image_paths=saved_paths if saved_paths else None)
     update_job(job.job_id, status=JobStatus.QUEUED)
 
     async def _run_job():

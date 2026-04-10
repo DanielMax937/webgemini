@@ -9,11 +9,11 @@
 | `GET` | `/health` | 健康检查 |
 | `POST` | `/chat` | 提交聊天任务（JSON：`prompt`、`tool`、可选 `attachments`） |
 | `GET` | `/chat/{job_id}` | 查询聊天任务状态 |
-| `POST` | `/video` | 提交视频任务（`multipart/form-data`：`prompt` + 至少一张参考图） |
+| `POST` | `/video` | 提交视频任务（`multipart/form-data`：`prompt` 必填；`images` 可选或空） |
 | `GET` | `/video/{job_id}` | 查询视频任务状态 |
-| `POST` | `/image` | 提交图片任务（`prompt` + 至少一张参考图） |
+| `POST` | `/image` | 提交图片任务（`prompt` 必填；`images` 可选或空） |
 | `GET` | `/image/{job_id}` | 查询图片任务状态 |
-| `POST` | `/music` | 提交音乐任务（`prompt`，可选参考图） |
+| `POST` | `/music` | 提交音乐任务（`prompt` 必填；`images` 可选或空） |
 | `GET` | `/music/{job_id}` | 查询音乐任务状态 |
 
 实现见：`src/web_gemini/main.py`。
