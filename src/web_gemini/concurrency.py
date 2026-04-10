@@ -2,7 +2,8 @@
 
 Environment variables:
   WG_MAX_CONCURRENT   – max simultaneous tasks (default: 10)
-  WG_TASK_TIMEOUT_S   – per-task timeout in seconds (default: 600)
+  WG_TASK_TIMEOUT_S   – per-task timeout in seconds for chat/video/music (default: 600)
+  WG_IMAGE_TASK_TIMEOUT_S – image jobs only: seconds from slot start until images must be ready (default: 300 = 5 min)
   WG_USE_DOM_EXTRACTION – set to "1"/"true" to skip clipboard and always use DOM (default: false)
 """
 from __future__ import annotations
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT: int = int(os.environ.get("WG_MAX_CONCURRENT", "10"))
 TASK_TIMEOUT_S: int = int(os.environ.get("WG_TASK_TIMEOUT_S", "600"))
+# Image generation: wall-clock from job execution start (concurrency slot) until success or failure.
+IMAGE_TASK_TIMEOUT_S: int = int(os.environ.get("WG_IMAGE_TASK_TIMEOUT_S", "300"))
 USE_DOM_EXTRACTION: bool = os.environ.get("WG_USE_DOM_EXTRACTION", "").lower() in ("1", "true", "yes")
 
 # Lazy singletons — created on first access within the running event loop

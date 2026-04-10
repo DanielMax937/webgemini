@@ -14,6 +14,20 @@ from .navigation import navigate_page_to_gemini_with_retry
 from .upload import upload_files
 
 OUTPUTS_DIR = Path(__file__).parent.parent.parent / "outputs"
+
+
+def _record_gemini_page_url(job_id: str, page: Optional[Page]) -> None:
+    """Store current Gemini page URL on the job (memory + optional PostgreSQL); not returned by HTTP API."""
+    if not page:
+        return
+    try:
+        url = page.url
+        if not url:
+            return
+        update_job(job_id, gemini_url=url)
+        persist_job(job_id, gemini_url=url)
+    except Exception:
+        pass
 GEMINI_URL = "https://gemini.google.com/app"
 MAX_IMAGE_POLL_TIME = 900  # 15 minutes — Gemini image generation can take 10+ minutes
 POLL_INTERVAL = 3
@@ -326,10 +340,12 @@ async def generate_image(job_id: str, prompt: str, image_paths: list[str]) -> No
         # 1. Navigate to fresh Gemini conversation (with retry: close and reopen, max 3 times, 5s interval)
         await navigate_page_to_gemini_with_retry(page, GEMINI_URL, timeout=60000)
         print(f"[generate_image] {job_id}: navigation done, URL={page.url}")
+        _record_gemini_page_url(job_id, page)
 
         # 2. Select Create image tool
         await _select_create_image(page)
         print(f"[generate_image] {job_id}: create image mode selected, URL={page.url}")
+        _record_gemini_page_url(job_id, page)
 
         # 3. Upload reference images if provided
         if image_paths:
@@ -396,11 +412,14 @@ async def generate_image(job_id: str, prompt: str, image_paths: list[str]) -> No
                 except Exception as e3:
                     print(f"[generate_image] {job_id}: all submit attempts failed, URL={page.url}: {e3}")
 
+        _record_gemini_page_url(job_id, page)
+
         # 5. Wait for download buttons (image generation complete)
         # Note: style picker is handled continuously inside _wait_for_download_buttons
         print(f"[generate_image] {job_id}: waiting for download buttons...")
         button_count = await _wait_for_download_buttons(page)
         print(f"[generate_image] {job_id}: download buttons count={button_count}, URL={page.url}")
+        _record_gemini_page_url(job_id, page)
         if not button_count:
             update_job(job_id, status=JobStatus.FAILED, error="timeout: no images generated within poll window")
             persist_job(job_id, status=JobStatus.FAILED.value, error="timeout: no images generated within poll window")
@@ -415,10 +434,18 @@ async def generate_image(job_id: str, prompt: str, image_paths: list[str]) -> No
             persist_job(job_id, status=JobStatus.FAILED.value, error="canvas extraction returned no images")
             return
 
+        final_url = page.url
         update_job(
             job_id,
             status=JobStatus.COMPLETED,
             images=downloaded_images,
+            gemini_url=final_url,
+        )
+        persist_job(
+            job_id,
+            status=JobStatus.COMPLETED.value,
+            images=downloaded_images,
+            gemini_url=final_url,
         )
         print(f"[generate_image] {job_id}: COMPLETED with {len(downloaded_images)} image(s)")
 

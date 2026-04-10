@@ -18,7 +18,12 @@ logging.basicConfig(
 )
 from pydantic import BaseModel
 
-from .concurrency import TASK_TIMEOUT_S, concurrency_slot, metrics as concurrency_metrics
+from .concurrency import (
+    IMAGE_TASK_TIMEOUT_S,
+    TASK_TIMEOUT_S,
+    concurrency_slot,
+    metrics as concurrency_metrics,
+)
 from .chat import process_chat
 from .grok_chat import process_grok_chat
 from .image import generate_image as generate_image_func
@@ -220,7 +225,7 @@ async def get_grok_chat_status(job_id: str) -> ChatStatusResponse:
 @app.post("/video", response_model=VideoJobResponse)
 async def create_video(
     prompt: str = Form(...),
-    images: list[UploadFile] = File(default=[]),
+    images: list[UploadFile] = File(default_factory=list),
 ) -> VideoJobResponse:
     """Submit a Veo3 video generation job with prompt and optional reference images."""
     if len(images) > MAX_IMAGES:
@@ -287,7 +292,7 @@ async def get_video_status(job_id: str) -> VideoStatusResponse:
 @app.post("/image", response_model=ImageJobResponse)
 async def create_image(
     prompt: str = Form(...),
-    images: list[UploadFile] = File(default=[]),
+    images: list[UploadFile] = File(default_factory=list),
 ) -> ImageJobResponse:
     """Submit an image generation job with prompt and optional reference images."""
     if len(images) > MAX_IMAGES:
@@ -318,11 +323,15 @@ async def create_image(
             async with concurrency_slot(job.job_id):
                 await asyncio.wait_for(
                     generate_image_func(job.job_id, job.prompt, job.image_paths),
-                    timeout=TASK_TIMEOUT_S,
+                    timeout=IMAGE_TASK_TIMEOUT_S,
                 )
         except asyncio.TimeoutError:
-            update_job(job.job_id, status=JobStatus.FAILED, error=f"Task timed out after {TASK_TIMEOUT_S}s")
-            persist_job(job.job_id, status=JobStatus.FAILED.value, error=f"Task timed out after {TASK_TIMEOUT_S}s")
+            msg = (
+                f"Image job timed out after {IMAGE_TASK_TIMEOUT_S}s (no images within "
+                f"{IMAGE_TASK_TIMEOUT_S // 60} minutes from execution start)"
+            )
+            update_job(job.job_id, status=JobStatus.FAILED, error=msg)
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=msg)
         except Exception as e:
             update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
             persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
@@ -353,7 +362,7 @@ async def get_image_status(job_id: str) -> ImageStatusResponse:
 @app.post("/music", response_model=MusicJobResponse)
 async def create_music(
     prompt: str = Form(...),
-    images: list[UploadFile] = File(default=[]),
+    images: list[UploadFile] = File(default_factory=list),
 ) -> MusicJobResponse:
     """Submit a music generation job with prompt and optional reference images."""
     if len(images) > MAX_IMAGES:

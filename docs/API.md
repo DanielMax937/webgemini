@@ -92,6 +92,8 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 - **`prompt`**（string，必填）：文本提示。
 - **`images`**（file[]，**可选**）：参考图。可**省略该字段**，或上传 **0 张**。若提供，最多 **5** 张；单张不超过 **10MB**；类型：`image/png`、`image/jpeg`、`image/gif`、`image/webp`。无参考图时仅按 `prompt` 走「Create image」流程。
 
+- **超时**：从任务**开始执行**（获得并发槽并启动浏览器流水线）起，默认 **5 分钟** 内须完成取图，否则任务标记为 `failed`。可通过环境变量 `WG_IMAGE_TASK_TIMEOUT_S`（秒）调整。
+
 **Response**: `{ "job_id": "...", "status": "queued" }`
 
 ### GET /image/{job_id}
