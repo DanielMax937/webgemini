@@ -32,7 +32,10 @@ SEND_BUTTON_SELECTORS = [
     '[aria-label="Send"]',
     'button[aria-label="Send"]',
 ]
-COPY_BUTTON_SELECTOR = '[aria-label="Copy"]'
+# Gemini: "Copy"; Grok / X: "Copy text"
+COPY_BUTTON_SELECTOR = (
+    'button[aria-label="Copy text"], button[aria-label="Copy"], [aria-label="Copy"]'
+)
 TOOLS_BUTTON_SELECTOR = 'button:has-text("Tools")'
 # Tool selectors
 TOOL_SELECTORS = {
@@ -290,7 +293,9 @@ async def _get_text_response_via_dom(page: Page) -> str:
     """Extract full response text from *page* DOM via Playwright (no clipboard)."""
     try:
         text = await page.evaluate("""() => {
-            const copyBtn = document.querySelector('[aria-label="Copy"]');
+            const copyBtn = document.querySelector('button[aria-label="Copy text"]')
+                || document.querySelector('button[aria-label="Copy"]')
+                || document.querySelector('[aria-label="Copy"]');
             if (!copyBtn) return '';
 
             let el = copyBtn;
@@ -300,7 +305,7 @@ async def _get_text_response_via_dom(page: Page) -> str:
                 let raw = el.innerText || el.textContent || '';
                 raw = raw.replace(/\\s+/g, ' ').trim();
                 if (raw.length > 80 && !/^\\s*(Copy|Regenerate|Thumbs|More)\\s*$/i.test(raw)) {
-                    return raw.replace(/\\s*(Copy|Regenerate|Thumbs up|Thumbs down|More)\\s*$/gi, '').trim();
+                    return raw.replace(/\\s*(Copy text|Copy|Regenerate|Thumbs up|Thumbs down|More)\\s*$/gi, '').trim();
                 }
             }
 
