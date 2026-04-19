@@ -19,6 +19,7 @@ logging.basicConfig(
 from pydantic import BaseModel
 
 from .concurrency import (
+    DEEP_RESEARCH_TASK_TIMEOUT_S,
     IMAGE_TASK_TIMEOUT_S,
     TASK_TIMEOUT_S,
     concurrency_slot,
@@ -356,6 +357,82 @@ async def get_image_status(job_id: str) -> ImageStatusResponse:
         status=job.status.value,
         images=job.images,
         error=job.error,
+    )
+
+
+@app.post("/deepresearch", response_model=ChatJobResponse)
+async def create_deep_research(
+    prompt: str = Form(...),
+    images: list[UploadFile] = File(default_factory=list),
+) -> ChatJobResponse:
+    """Submit a Gemini Deep Research job: multipart prompt plus optional reference images (same limits as POST /image)."""
+    if len(images) > MAX_IMAGES:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_IMAGES} images allowed")
+
+    saved_paths: list[str] = []
+    if images:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for img in images:
+            if img.content_type not in ALLOWED_IMAGE_TYPES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid image type: {img.content_type}. Allowed: png, jpg, gif, webp",
+                )
+            content = await img.read()
+            if len(content) > MAX_IMAGE_SIZE:
+                raise HTTPException(status_code=400, detail=f"Image {img.filename} exceeds 10MB limit")
+
+            dest = UPLOAD_DIR / f"{img.filename}"
+            dest.write_bytes(content)
+            saved_paths.append(str(dest))
+
+    job = create_job(
+        prompt=prompt,
+        tool="deep_research",
+        attachments=saved_paths if saved_paths else None,
+    )
+    update_job(job.job_id, status=JobStatus.QUEUED)
+
+    async def _run_job():
+        try:
+            async with concurrency_slot(job.job_id):
+                await asyncio.wait_for(
+                    process_chat(job.job_id, job.prompt, job.tool, job.attachments),
+                    timeout=DEEP_RESEARCH_TASK_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            msg = (
+                f"Deep research job timed out after {DEEP_RESEARCH_TASK_TIMEOUT_S}s "
+                f"({DEEP_RESEARCH_TASK_TIMEOUT_S // 60} minutes from execution start)"
+            )
+            update_job(job.job_id, status=JobStatus.FAILED, error=msg)
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=msg)
+        except Exception as e:
+            update_job(job.job_id, status=JobStatus.FAILED, error=str(e))
+            persist_job(job.job_id, status=JobStatus.FAILED.value, error=str(e))
+        finally:
+            for p in saved_paths:
+                Path(p).unlink(missing_ok=True)
+
+    task = asyncio.create_task(_run_job())
+    register_task(job.job_id, task)
+
+    return ChatJobResponse(job_id=job.job_id, status=JobStatus.QUEUED.value)
+
+
+@app.get("/deepresearch/{job_id}", response_model=ChatStatusResponse)
+async def get_deep_research_status(job_id: str) -> ChatStatusResponse:
+    """Poll Deep Research job status (same response shape as GET /chat/{job_id})."""
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return ChatStatusResponse(
+        job_id=job.job_id,
+        status=job.status.value,
+        text=job.text,
+        images=job.images,
+        error=job.error,
+        gemini_url=job.gemini_url,
     )
 
 
