@@ -5,6 +5,7 @@ Environment variables:
   WG_TASK_TIMEOUT_S   – per-task timeout in seconds for chat/video/music (default: 600)
   WG_IMAGE_TASK_TIMEOUT_S – image jobs only: seconds from slot start until images must be ready (default: 300 = 5 min)
   WG_DEEP_RESEARCH_TASK_TIMEOUT_S – POST /deepresearch job wall-clock timeout in seconds (default: 3600)
+  WG_DEEP_RESEARCH_MAX_POLL_S – gemini.send_prompt (tool=deep_research): max seconds to wait for assistant Copy button before export step (default: 3600)
   WG_DEEP_RESEARCH_CONFIRM_TIMEOUT_S / WG_DEEP_RESEARCH_CONFIRM_POLL_S – gemini.send_prompt: wait for and click “Start research” / 「开始研究」 after submit (defaults: 120s, 2s)
   WG_DEEP_RESEARCH_LINK_MARKERS – comma-separated substrings for the plan confirmation URL in page (default: deep_research_confirmation,googleusercontent.com/deep_research)
   WG_DEEP_RESEARCH_PLAN_LINK_TIMEOUT_S / WG_DEEP_RESEARCH_PLAN_LINK_POLL_S – wait until that link appears (defaults: 600s, 2s)

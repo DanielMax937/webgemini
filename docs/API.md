@@ -1,6 +1,6 @@
 # Web Gemini API
 
-通过浏览器自动化与 **Gemini Web** 及 **X 上的 Grok**（`https://x.com/i/grok`）交互的 FastAPI 服务，支持文本对话、Veo3 视频生成、图片生成、音乐生成。
+通过浏览器自动化与 **Gemini Web** 及 **X 上的 Grok**（`https://x.com/i/grok`）交互的 FastAPI 服务，支持文本对话、**Gemini Deep Research**（独立异步接口）、Veo3 视频生成、图片生成、音乐生成。
 
 ## 数据持久化
 
@@ -42,6 +42,56 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 **Response**: `{ "job_id", "status", "text", "images", "error", "gemini_url" }`
 
 - `gemini_url`: 返回结果时当前 Gemini 页面 URL，便于追溯对话来源
+
+### POST /deepresearch
+
+提交 **Gemini Deep Research** 任务（异步），请求形态与 `POST /image` 一致：`multipart/form-data`。
+
+- **`prompt`**（string，必填）：研究问题或指令。
+- **`images`**（file[]，**可选**）：参考图。可省略或 0 张。若提供，最多 **5** 张；单张不超过 **10MB**；类型：`image/png`、`image/jpeg`、`image/gif`、`image/webp`。
+
+**Response**: `{ "job_id": "xxx", "status": "queued" }`（与 `POST /chat` 相同字段名）。
+
+**任务墙钟超时**：从任务获得并发槽并开始执行起，默认 **3600 秒**（1 小时），由环境变量 `WG_DEEP_RESEARCH_TASK_TIMEOUT_S` 控制（见下方「Deep Research 环境变量」）。
+
+### GET /deepresearch/{job_id}
+
+查询 Deep Research 任务状态，**响应 JSON 与** `GET /chat/{job_id}` **完全相同**：`job_id`、`status`、`text`、`images`、`error`、`gemini_url`。
+
+- 轮询直至 `status` 为 `completed` 或 `failed`；`completed` 时 `text` 为最终抽取的正文（可能很长）。
+
+#### Deep Research 自动化流程（摘要）
+
+服务端在已登录的 Gemini Web 中自动完成大致顺序：
+
+1. 选择 **Deep Research** 工具并发送 `prompt`（及可选参考图）。
+2. 等待并点击 **开始研究** / `Start research` 等首次确认。
+3. 在超时内轮询页面是否出现计划确认链接（`WG_DEEP_RESEARCH_LINK_MARKERS`）；若出现则点击二次执行确认；若超时未出现则记录告警并继续后续步骤。
+4. 轮询直到主对话中出现 **Copy** 按钮（表示本轮回复已就绪），超时默认 **3600 秒**（`WG_DEEP_RESEARCH_MAX_POLL_S`）。
+5. 在发送区非加载态时点击 **Share & Export**（或中文「分享 / 导出」），再在菜单中点击 **Copy contents**（或「复制内容」），通过系统剪贴板读取完整报告正文并写入任务的 `text`。
+6. 若 Share/Export 未找到或 **Copy contents** 未点到，则回退为：点击助手消息的 **Copy** 按钮并读剪贴板，再不行则走 DOM 抽取（与普聊一致；受 `WG_USE_DOM_EXTRACTION` 影响）。
+
+调试落盘（可选）：开启时会在 `outputs/deep_research_layout_logs/<job_id>/` 写入轮询阶段的 HTML 与 probe（由 `WG_DEEP_RESEARCH_BODY_LOG` 等控制）。服务默认日志级别为 **INFO**，详细步骤已降为 **DEBUG**，排障时可提高日志级别。
+
+#### Deep Research 相关环境变量
+
+与 `src/web_gemini/concurrency.py` 模块注释保持一致（节选）：
+
+| 变量 | 含义（默认） |
+|------|----------------|
+| `WG_DEEP_RESEARCH_TASK_TIMEOUT_S` | 任务墙钟超时秒数（3600） |
+| `WG_DEEP_RESEARCH_MAX_POLL_S` | 等待主对话 **Copy** 按钮出现的上限秒数（3600） |
+| `WG_DEEP_RESEARCH_CONFIRM_TIMEOUT_S` / `WG_DEEP_RESEARCH_CONFIRM_POLL_S` | 首次「开始研究」确认（120s / 2s） |
+| `WG_DEEP_RESEARCH_PLAN_LINK_TIMEOUT_S` / `WG_DEEP_RESEARCH_PLAN_LINK_POLL_S` | 等待计划确认链接（600s / 2s） |
+| `WG_DEEP_RESEARCH_LINK_MARKERS` | 链接检测用逗号分隔子串 |
+| `WG_DEEP_RESEARCH_EXEC_CONFIRM_TIMEOUT_S` / `WG_DEEP_RESEARCH_EXEC_CONFIRM_POLL_S` | 二次执行确认（120s / 2s） |
+| `WG_DEEP_RESEARCH_EXPORT_CLICK` | 设为 `0`/`false` 跳过 Share & Export |
+| `WG_DEEP_RESEARCH_EXPORT_WAIT_NOT_SPINNING_S` / `WG_DEEP_RESEARCH_EXPORT_SPIN_POLL_S` | 导出前等待发送区非加载（300s / 2s） |
+| `WG_DEEP_RESEARCH_EXPORT_POST_CLICK_WAIT_S` | 点击 Share & Export 后等待秒数（2） |
+| `WG_DEEP_RESEARCH_COPY_CONTENTS_CLICK` | 设为 `0`/`false` 跳过菜单内 **Copy contents** |
+| `WG_DEEP_RESEARCH_COPY_CONTENTS_TIMEOUT_S` / `WG_DEEP_RESEARCH_COPY_CONTENTS_POLL_S` | 等待 **Copy contents** 菜单项（45s / 0.5s） |
+| `WG_DEEP_RESEARCH_BODY_LOG` / `…_INTERVAL_S` / `…_MAX_BYTES` | 轮询阶段是否写 HTML、节流间隔、单文件最大字节 |
+| `WG_USE_DOM_EXTRACTION` | `1`/`true` 时优先 DOM 抽取（普聊路径；Deep Research 在剪贴板路径失败时仍会尝试） |
 
 ### POST /grok/chat
 
@@ -112,6 +162,12 @@ export PGDATABASE=webgemini PGHOST=localhost PGUSER=caoxiaopeng
 ### GET /music/{job_id}
 
 查询音乐任务状态。`audio_url`、`local_path` 在完成后返回。`local_path` 为本地保存的音频文件路径。
+
+### GET /metrics
+
+返回并发槽占用与队列长度，便于监控。
+
+**Response** 示例：`{ "active_slots": 0, "queued_tasks": 0, "max_concurrent": 10 }`
 
 ### GET /health
 

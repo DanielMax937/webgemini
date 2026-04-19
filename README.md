@@ -22,6 +22,7 @@ FastAPI 服务：通过浏览器自动化操作 **Gemini Web**（`gemini.google.
 | 能力 | 端点 |
 |------|------|
 | Gemini 对话 | `POST /chat`，`GET /chat/{job_id}` |
+| Gemini Deep Research | `POST /deepresearch`，`GET /deepresearch/{job_id}`（`multipart/form-data`，响应形状同 chat） |
 | Grok（X）对话 | `POST /grok/chat`，`GET /grok/chat/{job_id}` |
 | Veo3 视频 / 图片 / 音乐 | `/video`、`/image`、`/music` 及对应 `GET .../{job_id}` |
 
