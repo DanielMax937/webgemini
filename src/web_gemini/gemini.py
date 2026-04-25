@@ -66,6 +66,20 @@ def _deep_research_link_markers() -> tuple[str, ...]:
     return parts if parts else _DEFAULT_DEEP_RESEARCH_LINK_MARKERS
 
 
+def _is_deep_research_confirmation_only_text(text: str) -> bool:
+    """Detect the interim plan-confirmation payload, not the final report body."""
+    if not text:
+        return False
+    compact = re.sub(r"\s+", " ", text).strip().lower()
+    if not compact:
+        return False
+    return (
+        "deep_research_confirmation_content" in compact
+        or "googleusercontent.com/deep_research" in compact
+        or "研究方案" in compact
+    )
+
+
 async def _page_contains_deep_research_confirmation_link(page: Page, markers: tuple[str, ...]) -> bool:
     """True if plan confirmation URL (or marker text) is present.
 
@@ -104,6 +118,114 @@ async def _page_contains_deep_research_confirmation_link(page: Page, markers: tu
                 return True
         except Exception:
             continue
+    return False
+
+
+async def _page_has_research_plan_card(page: Page) -> bool:
+    """Detect intermediate research-plan card even when confirmation link marker is absent."""
+    try:
+        return bool(await page.evaluate("""() => {
+            const hay = ((document.body && document.body.innerText) || '') +
+                ' ' + ((document.documentElement && document.documentElement.innerHTML) || '');
+            return /More research plan details/i.test(hay)
+                || /Research plan/i.test(hay)
+                || /研究计划|研究方案/.test(hay);
+        }"""))
+    except Exception:
+        return False
+
+
+async def _deep_research_is_plan_stage(page: Page) -> bool:
+    """True when UI still shows research-plan stage controls (not final report stage)."""
+    try:
+        return bool(await page.evaluate("""() => {
+            const isVisible = (el) => {
+                if (!(el instanceof HTMLElement)) return false;
+                const r = el.getBoundingClientRect();
+                const cs = window.getComputedStyle(el);
+                return r.width > 2 && r.height > 2 && cs.visibility !== 'hidden' && cs.display !== 'none';
+            };
+            const exportButton = document.querySelector('button[data-test-id="export-menu-button"]');
+            if (exportButton && isVisible(exportButton)) {
+                return false;
+            }
+            for (const el of document.querySelectorAll('deep-research-confirmation, deep-research-confirmation-content')) {
+                if (isVisible(el)) return true;
+            }
+            const ctaSelectors = [
+                'button[data-test-id="confirm-button"]',
+                'button[data-test-id="edit-button"]',
+                'button[aria-label="开始研究"]',
+                'button[aria-label="修改研究方案"]',
+            ];
+            for (const sel of ctaSelectors) {
+                const nodes = Array.from(document.querySelectorAll(sel));
+                for (const el of nodes) {
+                    if (isVisible(el)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }"""))
+    except Exception:
+        return False
+
+
+async def _deep_research_click_generate_report_if_present(page: Page, job_id: str) -> bool:
+    """Try to move from plan stage to execution by clicking CTA buttons."""
+    selectors = (
+        'button[data-test-id="confirm-button"]',
+        'button[aria-label="开始研究"]',
+        'button:has-text("开始研究")',
+        'button:has-text("Start research")',
+        'button:has-text("生成报告")',
+        'button:has-text("Generate report")',
+    )
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            if await loc.count() == 0:
+                continue
+            btn = loc.first
+            if not await btn.is_visible():
+                continue
+            if await btn.is_disabled():
+                continue
+            await btn.click(timeout=10_000)
+            logger.info("[deep_research] job=%s clicked plan-stage CTA via %s", job_id, sel)
+            await asyncio.sleep(1.0)
+            return True
+        except Exception as e:
+            logger.debug("[deep_research] job=%s generate-report selector %s: %s", job_id, sel, str(e)[:120])
+    try:
+        clicked = await page.evaluate("""() => {
+            const confirmById = document.querySelector('button[data-test-id="confirm-button"]');
+            if (confirmById && !confirmById.hasAttribute('disabled') && confirmById.getAttribute('aria-disabled') !== 'true') {
+                confirmById.scrollIntoView({block: 'center', inline: 'center'});
+                confirmById.click();
+                return 'confirm-button';
+            }
+            const needles = ['开始研究', 'Start research', 'Start Research', '生成报告', 'Generate report'];
+            for (const el of document.querySelectorAll('button, [role="button"]')) {
+                if (el.offsetParent === null) continue;
+                if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') continue;
+                const t = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                for (const n of needles) {
+                    if (t === n || (t.length < 80 && t.includes(n))) {
+                        el.click();
+                        return n;
+                    }
+                }
+            }
+            return '';
+        }""")
+        if clicked:
+            logger.info("[deep_research] job=%s clicked plan-stage CTA via dom matched=%r", job_id, clicked)
+            await asyncio.sleep(1.0)
+            return True
+    except Exception as e:
+        logger.debug("[deep_research] job=%s generate-report dom: %s", job_id, str(e)[:120])
     return False
 
 
@@ -282,21 +404,51 @@ async def _deep_research_click_share_export_when_ready_and_log(page: Page, job_i
         return False
     await _dump_deep_research_body_html(page, job_id, "before_export_click")
     clicked = await page.evaluate("""() => {
+        const isVisible = (el) => {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 1 && rect.height > 1 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
         const buttons = Array.from(document.querySelectorAll('button'));
+        let shareLikeCount = 0;
         for (const b of buttons) {
             const t = (b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
-            if (!t) continue;
+            const aria = (b.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim();
+            if (/share/i.test(t) || /分享/.test(t) || /share/i.test(aria)) {
+                shareLikeCount += 1;
+            }
+        }
+
+        const preferred = buttons.find((b) =>
+            b.getAttribute('data-test-id') === 'export-menu-button' && isVisible(b)
+        );
+        if (preferred) {
+            const t = (preferred.innerText || preferred.textContent || '').replace(/\\s+/g, ' ').trim();
+            preferred.click();
+            return { ok: true, label: t.slice(0, 120) || 'export-menu-button', shareLikeCount };
+        }
+
+        for (const b of buttons) {
+            if (!isVisible(b)) continue;
+            const t = (b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
             if (/share/i.test(t) && /export/i.test(t)) {
                 b.click();
-                return { ok: true, label: t.slice(0, 120) };
+                return { ok: true, label: t.slice(0, 120), shareLikeCount };
             }
             if (/分享/.test(t) && /导出/.test(t)) {
                 b.click();
-                return { ok: true, label: t.slice(0, 120) };
+                return { ok: true, label: t.slice(0, 120), shareLikeCount };
             }
         }
-        return { ok: false, label: '' };
+        return { ok: false, label: '', shareLikeCount };
     }""")
+    logger.info(
+        "[deep_research] job=%s share_scan ok=%s share_like_count=%s label=%r",
+        job_id,
+        bool(isinstance(clicked, dict) and clicked.get("ok")),
+        (clicked or {}).get("shareLikeCount") if isinstance(clicked, dict) else None,
+        (clicked or {}).get("label") if isinstance(clicked, dict) else None,
+    )
     if not isinstance(clicked, dict) or not clicked.get("ok"):
         logger.warning(
             "[deep_research] job=%s Share/Export button not found or not clicked (dom scan)",
@@ -304,7 +456,7 @@ async def _deep_research_click_share_export_when_ready_and_log(page: Page, job_i
         )
         await _dump_deep_research_body_html(page, job_id, "after_export_click_failed")
         return False
-    logger.debug("[deep_research] job=%s clicked Share/Export label=%r", job_id, clicked.get("label"))
+    logger.info("[deep_research] job=%s clicked Share/Export label=%r", job_id, clicked.get("label"))
     post_wait = float(os.environ.get("WG_DEEP_RESEARCH_EXPORT_POST_CLICK_WAIT_S", "2"))
     await asyncio.sleep(post_wait)
     await _dump_deep_research_body_html(page, job_id, "after_export_click")
@@ -324,9 +476,9 @@ async def _deep_research_click_copy_contents_in_export_menu(page: Page, job_id: 
 
     while time.monotonic() < deadline:
         try:
-            mi = page.locator('[role="menuitem"]').filter(has_text=re.compile(r"copy\s*contents", re.I))
+            mi = page.locator('[role="menuitem"]').filter(has_text=re.compile(r"^\\s*copy\\s*contents\\s*$", re.I))
             if await mi.count() > 0:
-                await mi.first.click(timeout=15_000)
+                await mi.last.click(timeout=15_000)
                 logger.debug("[deep_research] job=%s clicked Copy contents (menuitem copy contents)", job_id)
                 await asyncio.sleep(0.4)
                 return True
@@ -336,7 +488,7 @@ async def _deep_research_click_copy_contents_in_export_menu(page: Page, job_id: 
         try:
             mi_zh = page.locator('[role="menuitem"]').filter(has_text="复制内容")
             if await mi_zh.count() > 0:
-                await mi_zh.first.click(timeout=15_000)
+                await mi_zh.last.click(timeout=15_000)
                 logger.debug("[deep_research] job=%s clicked Copy contents (menuitem 复制内容)", job_id)
                 await asyncio.sleep(0.4)
                 return True
@@ -345,20 +497,35 @@ async def _deep_research_click_copy_contents_in_export_menu(page: Page, job_id: 
 
         try:
             clicked = await page.evaluate("""() => {
-                const spans = Array.from(document.querySelectorAll('span.mat-mdc-menu-item-text'));
-                for (const s of spans) {
-                    const t = (s.textContent || '').replace(/\\s+/g, ' ').trim();
-                    if (/^copy\\s*contents$/i.test(t) || t === '复制内容') {
-                        const btn = s.closest('button');
-                        if (btn) {
-                            btn.click();
-                            return { ok: true, label: t };
+                const isVisible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 1 && rect.height > 1 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const candidates = [];
+                const menuRoots = Array.from(document.querySelectorAll(
+                    '.cdk-overlay-pane, .mat-mdc-menu-panel, [role="menu"]'
+                )).filter(isVisible);
+                const roots = menuRoots.length ? menuRoots : [document];
+                for (const root of roots) {
+                    for (const b of root.querySelectorAll('button, [role="menuitem"]')) {
+                        if (!isVisible(b)) continue;
+                        const t = (b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (/^copy\\s*contents$/i.test(t) || t === '复制内容') {
+                            candidates.push({ el: b, label: t });
                         }
                     }
                 }
-                for (const b of document.querySelectorAll('button')) {
+                if (candidates.length) {
+                    const picked = candidates[candidates.length - 1];
+                    picked.el.click();
+                    return { ok: true, label: picked.label };
+                }
+
+                for (const b of document.querySelectorAll('button, [role="menuitem"]')) {
+                    if (!isVisible(b)) continue;
                     const t = (b.innerText || b.textContent || '').replace(/\\s+/g, ' ').trim();
-                    if (/copy\\s*contents/i.test(t) || /^复制内容$/.test(t)) {
+                    if (/^copy\\s*contents$/i.test(t) || /^复制内容$/.test(t)) {
                         b.click();
                         return { ok: true, label: t.slice(0, 120) };
                     }
@@ -540,10 +707,23 @@ async def send_prompt(
 
     # Select tool if specified
     if tool and tool in TOOL_SELECTORS:
-        await page.click(TOOLS_BUTTON_SELECTOR)
-        await asyncio.sleep(1)
-        await page.click(TOOL_SELECTORS[tool])
-        await asyncio.sleep(1)
+        tool_selected = False
+        try:
+            await page.click(TOOLS_BUTTON_SELECTOR, timeout=30_000)
+            await asyncio.sleep(1)
+            await page.click(TOOL_SELECTORS[tool], timeout=30_000)
+            await asyncio.sleep(1)
+            tool_selected = True
+        except Exception as e:
+            logger.warning("[tool] job=%s tools menu select failed for %s: %s", job_id, tool, str(e)[:120])
+        if not tool_selected:
+            try:
+                await page.click(TOOL_SELECTORS[tool], timeout=30_000)
+                await asyncio.sleep(1)
+                tool_selected = True
+                logger.debug("[tool] job=%s direct tool click succeeded for %s", job_id, tool)
+            except Exception as e:
+                logger.warning("[tool] job=%s direct tool click failed for %s: %s", job_id, tool, str(e)[:120])
         if run_dir:
             step += 1
             await _take_screenshot(page, run_dir, step, "02_after_tool_select")
@@ -625,6 +805,20 @@ async def send_prompt(
 
     # Get text response
     text = await _get_text_response(page, job_id, clipboard_only=deep_research_clipboard_only)
+    if tool == "deep_research" and _is_deep_research_confirmation_only_text(text):
+        logger.warning(
+            "[deep_research] job=%s got confirmation-only text; re-wait and retry export/copy once",
+            job_id,
+        )
+        await _wait_for_copy_button(
+            page,
+            max_poll_time=copy_poll_limit,
+            layout_log_job_id=job_id,
+        )
+        export_ok = await _deep_research_click_share_export_when_ready_and_log(page, job_id)
+        if export_ok:
+            deep_research_clipboard_only = await _deep_research_click_copy_contents_in_export_menu(page, job_id)
+        text = await _get_text_response(page, job_id, clipboard_only=deep_research_clipboard_only)
     if run_dir:
         step += 1
         await _take_screenshot(page, run_dir, step, "08_after_get_text")
@@ -777,6 +971,9 @@ async def _confirm_deep_research_execution(page: Page, job_id: str) -> None:
     poll = float(os.environ.get("WG_DEEP_RESEARCH_EXEC_CONFIRM_POLL_S", "2"))
     deadline = time.monotonic() + timeout_s
     role_names = (
+        "开始研究",
+        "Start research",
+        "Start Research",
         "Confirm and start",
         "确认并开始",
         "开始执行",
@@ -787,6 +984,9 @@ async def _confirm_deep_research_execution(page: Page, job_id: str) -> None:
         "继续",
     )
     locator_selectors = (
+        'button:has-text("开始研究")',
+        'button:has-text("Start research")',
+        'button:has-text("Start Research")',
         'button:has-text("确认并开始")',
         'button:has-text("Confirm and start")',
         'button:has-text("开始执行")',
@@ -845,7 +1045,9 @@ async def _confirm_deep_research_execution(page: Page, job_id: str) -> None:
         try:
             clicked = await page.evaluate("""() => {
                 const needles = [
-                    '确认并开始', 'Confirm and start', '开始执行', 'Confirm', '确认', '确定', 'Continue', '继续'
+                    '开始研究', 'Start research', 'Start Research',
+                    '确认并开始', 'Confirm and start', '开始执行',
+                    'Confirm', '确认', '确定', 'Continue', '继续'
                 ];
                 const els = document.querySelectorAll('button, [role="button"]');
                 for (const el of els) {
@@ -920,10 +1122,14 @@ async def _wait_deep_research_link_then_confirm_execution(page: Page, job_id: st
             poll_seq,
             force=(poll_seq == 0),
         )
-        if await _page_contains_deep_research_confirmation_link(page, markers):
+        link_ready = await _page_contains_deep_research_confirmation_link(page, markers)
+        plan_card_ready = False if link_ready else await _page_has_research_plan_card(page)
+        if link_ready or plan_card_ready:
             logger.debug(
-                "[deep_research] job=%s plan confirmation link detected (markers=%s)",
+                "[deep_research] job=%s execution gate detected link_ready=%s plan_card_ready=%s (markers=%s)",
                 job_id,
+                link_ready,
+                plan_card_ready,
                 markers,
             )
             await _maybe_log_deep_research_body_layout_snapshot(
@@ -983,6 +1189,16 @@ async def _wait_for_copy_button(
         try:
             count = await page.locator(COPY_BUTTON_SELECTOR).count()
             if count > 0:
+                if layout_log_job_id and await _deep_research_is_plan_stage(page):
+                    await _deep_research_click_generate_report_if_present(page, layout_log_job_id)
+                    logger.debug(
+                        "[deep_research] job=%s copy button exists but still in plan stage; keep polling",
+                        layout_log_job_id,
+                    )
+                    copy_poll_seq += 1
+                    await asyncio.sleep(POLL_INTERVAL)
+                    elapsed += POLL_INTERVAL
+                    continue
                 await asyncio.sleep(0.5)
                 return
         except Exception:
@@ -1131,4 +1347,3 @@ async def _get_text_response_via_dom(page: Page) -> str:
         return text or ""
     except Exception:
         return ""
-

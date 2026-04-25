@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import shutil
 import sys
 import tempfile
@@ -10,8 +11,10 @@ from typing import Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 # Configure logging so web_gemini module logs (e.g. [job] copy button) appear in stdout/log
+_log_level_name = os.environ.get("WG_LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     stream=sys.stdout,
     force=True,
